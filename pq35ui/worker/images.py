@@ -147,17 +147,41 @@ def inspect_image(path: str, family: str = None, ecu_part: str = None,
         return result
 
     if ecu_part:
-        parts = result["part_numbers"]
-        bare = ecu_part.replace(" ", "")
-        if any(bare.startswith(part) or part.startswith(bare[:10]) for part in parts):
-            check("ecu", True, "Matches connected ECU", ecu_part)
-        elif parts:
-            check("ecu", False, "Different part number",
-                  f"Image says {', '.join(parts)}; connected ECU is {ecu_part}.", level="warning")
-        else:
-            check("ecu", False, "Part number not found in image",
-                  "Can't confirm this image belongs to the connected ECU.", level="warning")
+        _part_check(check, family, data, result["part_numbers"], ecu_part)
     return result
+
+
+def _base(part: str) -> str:
+    """'1K0909144R' -> '1K0909144': the hardware part without the version suffix."""
+    return part[:9]
+
+
+def _part_check(check, family, data, found, ecu_part):
+    """Same base part number: fine (a suffix is just another version).
+    Different base: a crossflash, which needs extra steps afterwards (coding,
+    adaptation) and is blocked unless explicitly allowed on the Flash page."""
+    ecu = ecu_part.replace(" ", "").upper()
+    image = None
+    if family == EPS:
+        firmware = eps_firmware(data)  # the identity in the 0x5D block, not code strings
+        image = firmware[0] if firmware else None
+    if image is None:
+        candidates = [p for p in found if _base(p) == _base(ecu)] or found
+        image = candidates[0] if candidates else None
+    if image is None:
+        check("ecu", False, "Part number not found in image",
+              "Can't confirm this image belongs to the connected ECU.", level="warning")
+    elif image == ecu:
+        check("ecu", True, "Matches connected ECU", ecu)
+    elif _base(image) == _base(ecu):
+        check("ecu", True, f"Same part, version {image[9:] or '-'} (ECU {ecu[9:] or '-'})",
+              f"Image is {image}, the connected ECU is {ecu}. Same hardware, different "
+              "software version.")
+    else:
+        check("crossflash", False, f"Crossflash: {image} onto {ecu}",
+              f"This image is for {image}; the connected ECU is {ecu}. Flashing a different "
+              "part number needs extra steps afterwards (coding, adaptation) and is blocked "
+              "unless you allow a crossflash under advanced options.")
 
 
 def _family_label(family: str) -> str:
@@ -237,7 +261,7 @@ def _plan_eps(data, ecu_version, correct_checksum) -> dict:
     """EPS racks can't be read back, so there is no diff. Which blocks may be
     written depends on the module's firmware:
       0x5E dataset   firmware 3000+, and not the factory placeholder dataset
-      0x5D config    only onto the exact firmware version the block was built for
+      0x5D config    firmware 3000+, and only onto the exact version it was built for
       full firmware  modules on 2901 or newer (older upgrades aren't understood yet)
     """
     module = _version(ecu_version)
@@ -271,6 +295,10 @@ def _plan_eps(data, ecu_version, correct_checksum) -> dict:
                                                   "block was built for.")
             elif module is None:
                 config.update(valid=False, reason="The module's firmware is unknown (not identified).")
+            elif module < 3000:
+                # The flasher refuses partial-region flashes below 3000.
+                config.update(valid=False, reason=(
+                    f"This module runs {module}; below 3000 only full firmware can be flashed."))
             elif module != image_version:
                 config.update(valid=False, reason=(
                     f"0x5D blocks only fit the firmware they were built for: this image is "

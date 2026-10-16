@@ -567,7 +567,8 @@ class FlashPage(Page):
         self.simulator = QCheckBox("Bench simulator patches. BENCH ONLY: never put this in a car")
         self.recovery = QCheckBox("Recovery: the module is stuck in its bootloader and won't identify")
         self.no_backup = QCheckBox("Flash without a backup (not recommended)")
-        for box in (self.correct, self.simulator, self.recovery, self.no_backup):
+        self.crossflash = QCheckBox("Crossflash: allow an image for a different part number")
+        for box in (self.correct, self.simulator, self.recovery, self.no_backup, self.crossflash):
             adv.addWidget(box)
             box.toggled.connect(self._options_changed)
         advanced.add(self.advanced)
@@ -617,12 +618,20 @@ class FlashPage(Page):
     def _toggle_advanced(self, on):
         self.advanced.setVisible(on)
         if not on:
-            for box in (self.correct, self.simulator, self.recovery, self.no_backup):
+            for box in (self.correct, self.simulator, self.recovery, self.no_backup,
+                        self.crossflash):
                 box.setChecked(False)
         if self.plan:
             self._planned(self.plan)
 
     def _options_changed(self, *_):
+        if self.crossflash.isChecked() and self.sender() is self.crossflash:
+            QMessageBox.warning(self, "Crossflash",
+                                "A crossflash puts firmware for a different part number on "
+                                "this module. It changes what the module identifies as, and "
+                                "usually needs extra steps afterwards (coding, basic settings, "
+                                "adaptation) before it works in the car.\n\n"
+                                "Only do this if you know those steps for your car.")
         if self.recovery.isChecked() and self.sender() is self.recovery:
             QMessageBox.warning(self, "Recovery mode",
                                 "Recovery skips every check that the module is what you think it "
@@ -668,8 +677,12 @@ class FlashPage(Page):
             return self.gate.text()
         if not self.inspection:
             return "Choose an image."
-        if any(c["level"] == "error" and not (c["key"] == "checksums" and self.correct.isChecked())
+        allowed = {"checksums": self.correct.isChecked(), "crossflash": self.crossflash.isChecked()}
+        if any(c["level"] == "error" and not allowed.get(c["key"], False)
                for c in self.inspection["checks"]):
+            if any(c["key"] == "crossflash" for c in self.inspection["checks"]):
+                return ("This image is for a different part number (a crossflash). Allow it under "
+                        "advanced options if that's what you want.")
             return "This image can't be flashed. See the red badges."
         option = self.selected_option()
         if not option:
@@ -746,7 +759,8 @@ class FlashPage(Page):
                          "checksums\" under advanced options. Otherwise the file is damaged or "
                          "incomplete: get a fresh copy.")
             self.file_banner.show_message(text, "error")
-            if not (result.get("correctable") and self.correct.isChecked()):
+            allowable = {"crossflash"} | ({"checksums"} if result.get("correctable") else set())
+            if not all(c["key"] in allowable for c in errors):
                 self.refresh()
                 return
         elif warnings:
@@ -813,6 +827,13 @@ class FlashPage(Page):
         if self.blocking_reason():
             return
         option = self.selected_option()
+        crossing = next((c for c in self.inspection["checks"] if c["key"] == "crossflash"), None)
+        if crossing:
+            text, ok = QInputDialog.getText(
+                self, "Confirm crossflash",
+                f"{crossing['label']}.\nType CROSSFLASH to write it anyway:")
+            if not ok or text.strip() != "CROSSFLASH":
+                return
         if self.recovery.isChecked():
             text, ok = QInputDialog.getText(
                 self, "Confirm recovery flash",
