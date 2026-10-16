@@ -198,7 +198,8 @@ class Server:
             return self.families()
         if method == "inspect_image":
             from . import images
-            return images.inspect_image(params["path"], params.get("family"), params.get("ecu_part"))
+            return images.inspect_image(params["path"], params.get("family"), params.get("ecu_part"),
+                                        params.get("ecu_version"))
         if method == "plan_flash":
             from . import images
             return images.plan_flash(params["path"], params["family"], params.get("reference"),

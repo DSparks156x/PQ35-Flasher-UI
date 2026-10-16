@@ -723,7 +723,8 @@ class FlashPage(Page):
             self.file_banner.show_message("Choose a module at the top first.", "warning")
             return
         self.state.offline("inspect_image", {"path": path, "family": family,
-                                             "ecu_part": self.state.part() or None},
+                                             "ecu_part": self.state.part() or None,
+                                             "ecu_version": (self.state.identity or {}).get("sw_version")},
                            self._inspected, lambda e: self._file_error(e))
 
     def _file_error(self, error):

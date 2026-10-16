@@ -56,7 +56,11 @@ def guess_family(data: bytes):
     return SIZES.get(len(data))
 
 
-def inspect_image(path: str, family: str = None, ecu_part: str = None) -> dict:
+DATASET_CRC_MARKER = bytes.fromhex("78563412")
+
+
+def inspect_image(path: str, family: str = None, ecu_part: str = None,
+                  ecu_version: str = None) -> dict:
     """What is this file, is it intact, and does it belong to the connected ECU?"""
     data = Path(path).read_bytes()
     guessed = guess_family(data)
@@ -86,8 +90,16 @@ def inspect_image(path: str, family: str = None, ecu_part: str = None) -> dict:
         return result
     family = family or guessed
 
+    dataset_file = family == EPS and len(data) == 0x1000
+    if dataset_file and data[-8:-4] == DATASET_CRC_MARKER:
+        # Gen2 layout: the CRC marker ends the 0x5E block. Those racks (below
+        # 3000) don't take 4 KiB datasets.
+        check("dataset", False, "Dataset for firmware below 3000",
+              "Gen2 steer datasets aren't flashed as a 4 KiB block. Datasets work on racks "
+              "with firmware 3000 or newer.")
+        return result
     start, end = FULL[family]
-    if family == EPS and len(data) == 0x1000:
+    if dataset_file:
         start, end = 0x5E000, 0x5EFFF
     try:
         prepared = _prepare(family, data, start, end)
@@ -123,6 +135,16 @@ def inspect_image(path: str, family: str = None, ecu_part: str = None) -> dict:
             if status not in ("stock", "mismatch"):
                 label = f"Patch: {name}" + ("" if status == "applied" else f" ({status})")
                 check("patch:" + name, True, label, status, level="info")
+
+    if dataset_file:
+        # A dataset carries no part number; what matters is the rack's firmware.
+        module = _version(ecu_version)
+        if module is not None and module >= 3000:
+            check("ecu", True, f"Fits this rack (firmware {module})", "Datasets need 3000+.")
+        elif module is not None:
+            check("ecu", False, "Needs firmware 3000 or newer",
+                  f"This rack runs {module}; 0x5E datasets need 3000 or newer.")
+        return result
 
     if ecu_part:
         parts = result["part_numbers"]
