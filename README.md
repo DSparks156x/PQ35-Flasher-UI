@@ -1,11 +1,17 @@
 # PQ35 Flasher UI
 
-A desktop app for [PQ35-Flasher](https://github.com/DSparks156x/PQ35-Flasher): back up,
+A slick UI for [PQ35-Flasher](https://github.com/DSparks156x/PQ35-Flasher): back up,
 patch and flash Haldex Gen4 and ZF EPS rack modules, and read EPS diagnostics, without
 touching the command line.
 
-Same rules as the flasher: you're at your own risk, and it can't stop you flashing the
-wrong firmware in recovery mode. It does try hard to stop everything else.
+You are at your own risk using this project. I am not responsible for thermonuclear war, broken timing chains, divorce, or you being sad because your EPS no longer works if something goes wrong. 
+
+This project is intended to limit the ways you can screw things up, and make the flashing process simple - but it cannot stop you from being a dumbass. If you use the ignore safeguards buttons and flash a binary of the game tetris to your EPS, I cannot help you. 
+
+A failed flash means that module does not function until it has been successfully recovered. In very rare cases, it may not be recoverable.  This means no EPS. 
+
+In practice its pretty hard to brick shit beyond recovery, but please - 
+Do not Dumb. 
 
 ## Install
 
