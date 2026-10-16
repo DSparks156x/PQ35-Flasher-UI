@@ -425,7 +425,20 @@ class BackupPage(Page):
 
     def __init__(self, state, parent=None):
         super().__init__(state, parent)
+        # Shown instead of everything else for modules that can't be read back.
+        self.not_possible = self.add(Card("EPS racks can't be backed up"))
+        self.not_possible.add(muted(
+            "The rack's firmware can't be read back over OBD, so there's no backup step for "
+            "EPS. You don't need one to flash it: the Flash page only allows writes that suit "
+            "the firmware the rack reports."))
+        self.not_possible.add(muted(
+            "Instead, keep copies of what the rack runs now: the factory SGO or .bin for its "
+            "part number and version, and its steer dataset. A factory full firmware carries "
+            "the placeholder 000 dataset, so going back to stock means both."))
+        self.not_possible.add(Banner()).show_message(
+            "Nothing to do here for EPS. Go to Flash when you're ready.", "info")
         card = self.add(Card("Read the module"))
+        self.read_card = card
         card.add(muted("Copies the firmware off the module into your library. It's your way "
                        "back if a tune misbehaves, and new images are compared against it. "
                        "Takes about 7 minutes over OBD. Nothing is written."))
@@ -442,6 +455,7 @@ class BackupPage(Page):
         self.progress = card.add(ProgressPanel())
         self.banner = card.add(Banner())
         history = self.add(Card("Backups of this module"))
+        self.history_card = history
         self.list = history.add(QListWidget())
         self.list.setMinimumHeight(140)
         self.finish()
@@ -450,10 +464,12 @@ class BackupPage(Page):
     def refresh(self):
         record = self.state.record
         family = self.state.family["name"] if self.state.family else None
-        if family and family not in BACKUP_FAMILIES:
-            record = None
-            self.banner.show_message("This module can't be read back over OBD, so it can't be "
-                                     "backed up here.", "info")
+        possible = family is None or family in BACKUP_FAMILIES
+        self.not_possible.setVisible(not possible)
+        self.read_card.setVisible(possible)
+        self.history_card.setVisible(possible)
+        if not possible:
+            return
         self.read_button.setEnabled(bool(record) and not self.state.busy)
         self.open_button.setEnabled(bool(record))
         self.list.clear()

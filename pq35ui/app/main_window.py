@@ -264,12 +264,17 @@ class MainWindow(QMainWindow):
         has_family = state.family is not None
         enabled = {
             "connect": True, "log": True,
-            "backup": bool(state.identity) and state.family["name"] in pages.BACKUP_FAMILIES,
+            # EPS: clickable, and the page explains why there's no backup.
+            "backup": has_family and (bool(state.identity)
+                                      or state.family["name"] not in pages.BACKUP_FAMILIES),
             "flash": has_family and state.family.get("can_flash", False),
             "patches": has_family and state.family["name"] in (pages.EPS, pages.HALDEX),
             "diagnostics": bool(state.identity) and has_family
             and bool(set(state.family["operations"]) & {op for op, *_ in pages.DIAGNOSTICS}),
         }
+        backup_item = self.nav.item(1)
+        no_backup = has_family and state.family["name"] not in pages.BACKUP_FAMILIES
+        backup_item.setText("Back up (not for EPS)" if no_backup else "Back up")
         for row in range(self.nav.count()):
             item = self.nav.item(row)
             on = enabled[item.data(Qt.ItemDataRole.UserRole)]
