@@ -20,6 +20,8 @@ def data_dir() -> Path:
         path = Path.home() / "Library" / "Application Support" / "PQ35-Flasher"
     else:
         path = Path(os.environ.get("XDG_DATA_HOME", Path.home() / ".local" / "share")) / "pq35-flasher"
+    if os.environ.get("PQ35_DEMO"):
+        path = path / "demo"  # keep the pretend module's backups out of the real library
     path.mkdir(parents=True, exist_ok=True)
     return path
 

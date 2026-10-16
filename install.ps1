@@ -4,13 +4,20 @@
 #
 # or run .\install.ps1 from a checkout. Re-run it any time to update.
 # Installs uv (per-user), a private 64-bit Python for the app, a private 32-bit
-# Python for J2534 adapters, and Start menu + desktop shortcuts. No admin needed.
+# Python for J2534 adapters, and (if you say yes) Start menu and desktop
+# shortcuts. No admin needed. Set PQ35_YES=1 to accept every question.
 
 $ErrorActionPreference = "Stop"
 $Repo = "DSparks156x/PQ35-Flasher-UI"
 $InstallDir = Join-Path $env:LOCALAPPDATA "PQ35-Flasher-UI"
 
 function Step($text) { Write-Host "==> $text" -ForegroundColor Cyan }
+
+function Ask($question) {
+    if ($env:PQ35_YES) { return $true }
+    try { $answer = Read-Host "$question [Y/n]" } catch { return $true }
+    return -not ($answer -match '^\s*[Nn]')
+}
 
 # 1. Find or fetch the app.
 $here = if ($PSScriptRoot) { $PSScriptRoot } else { $null }
@@ -85,14 +92,16 @@ if ($py32 -and (Test-Path $py32)) {
     Write-Warning "Couldn't set up 32-bit Python. J2534 adapters won't work; others will."
 }
 
-# 5. Shortcuts.
-Step "Creating shortcuts"
+# 5. Shortcuts, if wanted.
 $pythonw = Join-Path $AppDir ".venv\Scripts\pythonw.exe"
 $shell = New-Object -ComObject WScript.Shell
-$targets = @(
-    (Join-Path ([Environment]::GetFolderPath("Programs")) "PQ35 Flasher.lnk"),
-    (Join-Path ([Environment]::GetFolderPath("Desktop")) "PQ35 Flasher.lnk")
-)
+$targets = @()
+if (Ask "Add PQ35 Flasher to the Start menu?") {
+    $targets += Join-Path ([Environment]::GetFolderPath("Programs")) "PQ35 Flasher.lnk"
+}
+if (Ask "Add a desktop shortcut?") {
+    $targets += Join-Path ([Environment]::GetFolderPath("Desktop")) "PQ35 Flasher.lnk"
+}
 foreach ($path in $targets) {
     $link = $shell.CreateShortcut($path)
     $link.TargetPath = $pythonw
@@ -103,5 +112,6 @@ foreach ($path in $targets) {
 }
 
 Write-Host ""
-Write-Host "PQ35 Flasher is installed. Start it from the Start menu or the desktop shortcut." -ForegroundColor Green
+Write-Host "PQ35 Flasher is installed." -ForegroundColor Green
+Write-Host "You can always start it with: $(Join-Path $AppDir 'run.cmd')"
 Write-Host "Adapters: J2534 needs the adapter vendor's driver. CANable/candleLight (gs_usb) needs no driver."

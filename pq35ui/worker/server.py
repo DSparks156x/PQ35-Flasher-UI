@@ -189,7 +189,11 @@ class Server:
         if method == "hello":
             return self.hello()
         if method == "list_interfaces":
-            return discovery.list_interfaces()
+            found = discovery.list_interfaces()
+            if os.environ.get("PQ35_DEMO"):
+                from .demo import adapter_entry
+                found.insert(0, adapter_entry())
+            return found
         if method == "families":
             return self.families()
         if method == "inspect_image":
@@ -199,7 +203,8 @@ class Server:
             from . import images
             return images.plan_flash(params["path"], params["family"], params.get("reference"),
                                      params.get("correct_checksum", False),
-                                     params.get("simulator_mode", False))
+                                     params.get("simulator_mode", False),
+                                     params.get("ecu_version"))
         if method == "eps_patch_status":
             from . import images
             return images.eps_patch_status(params["path"])
@@ -238,6 +243,7 @@ class Server:
             "platform": sys.platform,
             "flasher_commit": commit,
             "backends": discovery.backends(),
+            "demo": bool(os.environ.get("PQ35_DEMO")),
         }
 
     def families(self):
@@ -285,6 +291,9 @@ class Server:
         if operation not in HARDWARE_OPERATIONS:
             raise WorkerError(f"Unknown operation {operation!r}")
         adapter = params["adapter"]
+        if adapter["adapter"] == "demo":
+            from .demo import DemoModule
+            return DemoModule(self, self.data_dir).run(params)
         argv = ["--module", params["module"], "--adapter", adapter["adapter"]]
         for key in ("dll", "channel", "serial", "bus", "baud"):
             if adapter.get(key) not in (None, ""):

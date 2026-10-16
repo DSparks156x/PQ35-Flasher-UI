@@ -1,7 +1,9 @@
 """Find CAN interfaces without opening them. Stdlib only; optional packages
 are probed lazily and simply contribute nothing when missing."""
 import importlib.util
+import json
 import os
+import subprocess
 import struct
 import sys
 from pathlib import Path
@@ -105,10 +107,21 @@ def socketcan_devices() -> list:
             up = (entry / "operstate").read_text().strip() in ("up", "unknown")
         except OSError:
             continue
+        bitrate = _socketcan_bitrate(entry.name)
         result.append({"adapter": "socketcan", "channel": entry.name,
                        "label": f"SocketCAN · {entry.name}" + ("" if up else " (down)"),
-                       "present": True, "up": up})
+                       "present": True, "up": up, "bitrate": bitrate})
     return result
+
+
+def _socketcan_bitrate(name):
+    try:
+        out = subprocess.run(["ip", "-details", "-json", "link", "show", "dev", name],
+                             capture_output=True, text=True, timeout=5).stdout
+        info = json.loads(out)[0]["linkinfo"]["info_data"]
+        return info.get("bittiming", {}).get("bitrate")
+    except (OSError, ValueError, KeyError, IndexError, subprocess.SubprocessError):
+        return None
 
 
 def panda_devices() -> list:

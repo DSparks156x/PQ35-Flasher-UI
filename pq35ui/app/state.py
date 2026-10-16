@@ -10,6 +10,7 @@ class AppState(QObject):
     progress = Signal(dict)
     busy_changed = Signal(bool)
     open_in_flash = Signal(str)
+    refresh_interfaces = Signal()
 
     def __init__(self, pool, settings, parent=None):
         super().__init__(parent)

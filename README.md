@@ -15,31 +15,47 @@ wrong firmware in recovery mode. It does try hard to stop everything else.
 irm https://raw.githubusercontent.com/DSparks156x/PQ35-Flasher-UI/main/install.ps1 | iex
 ```
 
-**Linux**:
+**Linux and macOS** (needs git; on macOS run `xcode-select --install` first if you
+don't have it):
 
 ```bash
 curl -LsSf https://raw.githubusercontent.com/DSparks156x/PQ35-Flasher-UI/main/install.sh | sh
 ```
 
-The installer sets up [uv](https://docs.astral.sh/uv/), a private Python for the app,
-and on Windows a private 32-bit Python for J2534 adapters. It doesn't touch any Python
-you already have. Then it adds a Start menu / app menu shortcut. Run it again to update.
+The installer sets up [uv](https://docs.astral.sh/uv/) and a private Python for the
+app. On Windows it also adds a private 32-bit Python for J2534 adapters. It doesn't touch
+any Python you already have. It then asks whether to add shortcuts: Start menu and
+desktop on Windows, app menu and desktop on Linux, Applications folder on macOS.
+Set `PQ35_YES=1` to answer yes to everything. Run the installer again to update.
+
+Without shortcuts, start it with `run.cmd` (Windows) or `pq35-flasher` (Linux/macOS)
+in the install folder:
+
+| | Install folder |
+|---|---|
+| Windows | `%LOCALAPPDATA%\PQ35-Flasher-UI\app` |
+| Linux | `~/.local/share/pq35-flasher-ui/app` |
+| macOS | `~/Library/Application Support/PQ35-Flasher-UI/app` |
 
 From a checkout: `git clone --recurse-submodules …`, then `.\install.ps1` or `./install.sh`.
 
 ## Adapters
 
-| Adapter | Windows | Linux |
-|---|---|---|
-| J2534 (Scanmatik, Tactrix, …) | Install the vendor's driver | Not supported |
-| CANable / candleLight (gs_usb firmware) | Works out of the box on Windows 10/11 | Shows up as `can0`; pick SocketCAN |
-| SocketCAN | n/a | `sudo ip link set can0 up type can bitrate 500000` first |
-| Panda | `uv pip install pandacan` into `.venv` (untested) | same |
+| Adapter | Windows | Linux | macOS |
+|---|---|---|---|
+| J2534 (Scanmatik, Tactrix, …) | Install the vendor's driver | Not supported | Not supported |
+| CANable / candleLight (gs_usb firmware) | Works out of the box on Windows 10/11 | Shows up as `can0`; pick SocketCAN | gs_usb (untested) |
+| SocketCAN | n/a | Brought up from the Connect page | n/a |
+| Panda | `uv pip install pandacan` into `.venv` (untested) | same | same |
 
 candleLight firmware tells Windows to use the built-in WinUSB driver, so no Zadig is
 needed. Use Zadig (bind WinUSB) only if the adapter doesn't appear, for example because
 another driver claimed it earlier. CANables shipped with the older slcan firmware show
 up as a COM port and need [candleLight firmware](https://canable.io/updater/) instead.
+
+On Linux, a SocketCAN interface that is down, or not at 500 kbit/s, gets a **Bring up**
+button on the Connect page. It runs `ip link set … up type can bitrate 500000` through
+`pkexec`, so you're asked for your password.
 
 ## How it works
 
@@ -62,12 +78,20 @@ PySide6 UI (64-bit)  ──JSON lines──▶  worker  ──▶  flasher (subm
 - **Images are checked when you choose them**: size, internal checksums, which module
   they're for, and whether the part number matches the connected ECU. A Haldex image
   can't be flashed with the EPS selected.
-- **A backup is required before the first flash** of each module. Backups go into a
-  per-module library.
-- **The flash range is chosen for you.** The new image is diffed against the module's
-  latest backup (or the last image flashed on top of it), and the smallest whole range
-  covering every changed byte is preselected. With no trustworthy reference, the full
-  range is preselected.
+- **Haldex: a backup is required before the first flash**, and goes into a per-module
+  library. The full application is the default. Smaller ranges appear under advanced
+  options, and only when they cover every byte that differs from the module's last known
+  image.
+- **EPS: no backup step**, because racks can't be read back over OBD. What can be written
+  depends on the firmware the module reports:
+  - 0x5E steer dataset: firmware 3000 or newer, and never the factory `000` placeholder.
+    It's the default.
+  - 0x5D configuration block: only onto the exact firmware version it was built for. It
+    becomes the default when the image has a 0x5D patch such as HCA applied.
+  - Full firmware: modules on 2901 or newer. Upgrading from older firmware isn't
+    understood yet.
+  - A full flash of a factory image with the `000` placeholder dataset prompts you to
+    flash a real dataset straight after.
 - **A checklist and a 3-second hold-to-flash** replace typing `YES`. Recovery mode
   needs `RECOVER` typed.
 - **While flashing**, the window refuses to close and the computer is kept awake.
@@ -80,15 +104,25 @@ PySide6 UI (64-bit)  ──JSON lines──▶  worker  ──▶  flasher (subm
 
 - Windows: `%LOCALAPPDATA%\PQ35-Flasher`
 - Linux: `~/.local/share/pq35-flasher`
+- macOS: `~/Library/Application Support/PQ35-Flasher`
 
 That folder holds `library/<module>/` (backups, flash history, `state.bin`), `logs/`
 (one log per session) and `settings.json`. **Log → Save support bundle** zips the session
 log and module history (no firmware) for bug reports.
+
+## Demo mode
+
+`python -m pq35ui --demo` adds a "Demo · pretend module" interface that simulates
+identify, backup, flash and diagnostics with no hardware. Images still go through the
+real flasher checks. The pretend module remembers what you flash to it, and its backups
+are kept apart from the real library. To start it from a real image, set
+`PQ35_DEMO_HALDEX` / `PQ35_DEMO_EPS` to a 320 KiB / 384 KiB file.
 
 ## Development
 
 ```bash
 uv sync
 uv run python -m pq35ui            # the app
+uv run python -m pq35ui --demo     # with the pretend module
 uv run python -m pq35ui.worker     # a worker on stdin/stdout, for poking at the protocol
 ```

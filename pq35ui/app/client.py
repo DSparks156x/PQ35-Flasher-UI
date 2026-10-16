@@ -178,6 +178,8 @@ class WorkerPool(QObject):
         return self._client(sys.executable, "worker")
 
     def for_adapter(self, adapter: dict) -> WorkerClient:
+        if adapter.get("adapter") == "demo":
+            return self.native()
         if adapter.get("adapter") == "j2534" and struct.calcsize("P") != 4:
             python = find_python32(self.settings)
             if python is None:

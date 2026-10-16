@@ -1,3 +1,4 @@
+import os
 import sys
 
 from PySide6.QtCore import QLockFile
@@ -8,6 +9,9 @@ from .storage import data_dir
 
 
 def main():
+    if "--demo" in sys.argv:
+        # Set before anything reads the data dir; workers inherit it.
+        os.environ["PQ35_DEMO"] = "1"
     app = QApplication(sys.argv)
     app.setApplicationName("PQ35 Flasher")
     app.setOrganizationName("PQ35")

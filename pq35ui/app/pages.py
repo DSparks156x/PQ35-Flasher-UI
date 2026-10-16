@@ -1,10 +1,12 @@
 """The screens behind the left-hand navigation."""
 import json
+import re
+import shutil
 import time
 import zipfile
 from pathlib import Path
 
-from PySide6.QtCore import Qt, QUrl
+from PySide6.QtCore import QProcess, Qt, QTimer, QUrl
 from PySide6.QtGui import QDesktopServices
 from PySide6.QtWidgets import (
     QButtonGroup, QCheckBox, QFileDialog, QGridLayout, QHBoxLayout, QInputDialog, QLabel,
@@ -16,6 +18,9 @@ from .storage import data_dir, timestamp
 from .widgets import Banner, Card, DropZone, FlowRow, HoldButton, h1, kib, muted
 
 HALDEX, EPS = "haldex-gen4", "pq-eps"
+# Modules whose firmware can be read back over OBD. EPS racks can't, so there
+# is no backup to require and nothing to diff against.
+BACKUP_FAMILIES = {HALDEX}
 
 
 class Page(QScrollArea):
@@ -66,6 +71,14 @@ class ConnectPage(Page):
         self.adapter_card = self.add(Card("Interface"))
         self.adapter_text = self.adapter_card.add(muted(""))
         self.adapter_help = self.adapter_card.add(Banner())
+        self.bring_up = QPushButton("")
+        self.bring_up.clicked.connect(self.bring_up_socketcan)
+        self.bring_up.hide()
+        row = QHBoxLayout()
+        row.addWidget(self.bring_up)
+        row.addStretch(1)
+        self.adapter_card.add(row)
+        self.bring_up_process = None
 
         card = self.add(Card("Identify the module"))
         card.add(muted("Turn the ignition on (engine off), then identify the module. "
@@ -95,19 +108,56 @@ class ConnectPage(Page):
                 "• CANable / candleLight (gs_usb): no driver needed on Windows 10/11. "
                 "If it isn't listed, use Zadig to bind WinUSB to it once.\n"
                 "• Linux SocketCAN: sudo ip link set can0 up type can bitrate 500000", "info")
-        else:
+        self.bring_up.hide()
+        if adapter:
             self.adapter_text.setText(adapter.get("label", ""))
             problem = adapter.get("problem")
             if adapter["adapter"] == "gs_usb" and not backends.get("gs_usb"):
                 problem = "gs_usb support isn't installed. Re-run the installer."
             elif adapter["adapter"] == "socketcan" and adapter.get("up") is False:
-                problem = (f"{adapter['channel']} is down. Bring it up first:\n"
-                           f"sudo ip link set {adapter['channel']} up type can bitrate 500000")
+                problem = (f"{adapter['channel']} is down. Bring it up at 500 kbit/s first "
+                           "(you'll be asked for your password).")
+                self.bring_up.setText(f"Bring up {adapter['channel']}")
+                self.bring_up.show()
+            elif adapter["adapter"] == "socketcan" and adapter.get("bitrate") not in (None, 500000):
+                problem = (f"{adapter['channel']} is set to {adapter['bitrate'] // 1000} kbit/s. "
+                           "The PQ35 powertrain/diagnostic CAN runs at 500 kbit/s.")
+                self.bring_up.setText(f"Set {adapter['channel']} to 500 kbit/s")
+                self.bring_up.show()
             elif adapter["adapter"] == "j2534" and not adapter.get("present", True):
                 problem = f"The registered driver DLL is missing: {adapter.get('dll')}"
             self.adapter_help.show_message(problem or "", "warning")
         self.identify_button.setEnabled(bool(adapter and family) and not self.state.busy)
         self._show_identity()
+
+    def bring_up_socketcan(self):
+        channel = str((self.state.adapter or {}).get("channel", ""))
+        if not re.fullmatch(r"[A-Za-z0-9_.-]{1,15}", channel):
+            return
+        pkexec, ip = shutil.which("pkexec"), shutil.which("ip")
+        if not (pkexec and ip):
+            self.adapter_help.show_message(
+                "Couldn't find pkexec to ask for your password. Run this in a terminal:\n"
+                f"sudo ip link set {channel} down; "
+                f"sudo ip link set {channel} up type can bitrate 500000", "warning")
+            return
+        script = (f"{ip} link set {channel} down && "
+                  f"{ip} link set {channel} up type can bitrate 500000 restart-ms 100")
+        self.bring_up.setEnabled(False)
+        self.bring_up_process = QProcess(self)
+
+        def finished(code, _status):
+            self.bring_up.setEnabled(True)
+            if code == 0:
+                self.state.refresh_interfaces.emit()
+            else:
+                error = bytes(self.bring_up_process.readAllStandardError()).decode(errors="replace")
+                self.adapter_help.show_message(
+                    f"Couldn't bring up {channel}" + (f": {error.strip()}" if error.strip() else
+                                                      " (cancelled?)."), "error")
+
+        self.bring_up_process.finished.connect(finished)
+        self.bring_up_process.start(pkexec, ["/bin/sh", "-c", script])
 
     def _show_identity(self):
         while self.grid.count():
@@ -122,7 +172,11 @@ class ConnectPage(Page):
             value_label.setTextInteractionFlags(Qt.TextInteractionFlag.TextSelectableByMouse)
             self.grid.addWidget(label, row, 0)
             self.grid.addWidget(value_label, row, 1)
-        if self.state.record and self.state.record.has_backup():
+        if self.state.family["name"] not in BACKUP_FAMILIES:
+            self.next_hint.show_message(
+                "Ready. EPS racks can't be read back over OBD, so there's no backup step. "
+                "Keep a copy of the firmware file the rack is on now.", "ok")
+        elif self.state.record and self.state.record.has_backup():
             self.next_hint.show_message("Ready. You already have a backup of this module.", "ok")
         else:
             self.next_hint.show_message("Next: make a backup before flashing anything.", "info")
@@ -184,6 +238,11 @@ class BackupPage(Page):
 
     def refresh(self):
         record = self.state.record
+        family = self.state.family["name"] if self.state.family else None
+        if family and family not in BACKUP_FAMILIES:
+            record = None
+            self.banner.show_message("This module can't be read back over OBD, so it can't be "
+                                     "backed up here.", "info")
         self.read_button.setEnabled(bool(record) and not self.state.busy)
         self.open_button.setEnabled(bool(record))
         self.list.clear()
@@ -268,6 +327,7 @@ class FlashPage(Page):
 
         self.range_card = self.add(Card("2. What to write"))
         self.reason = self.range_card.add(muted(""))
+        self.plan_notes = self.range_card.add(Banner())
         self.options_box = QVBoxLayout()
         self.range_card.add(self.options_box)
         self.option_group = QButtonGroup(self)
@@ -318,6 +378,8 @@ class FlashPage(Page):
         if not on:
             for box in (self.correct, self.simulator, self.recovery, self.no_backup):
                 box.setChecked(False)
+        if self.plan:
+            self._planned(self.plan)
 
     def _options_changed(self, *_):
         if self.recovery.isChecked() and self.sender() is self.recovery:
@@ -339,6 +401,7 @@ class FlashPage(Page):
         if self.path and self.loaded_for != (self.family_name(), self.state.part()):
             self._reset_file()
         self.simulator.setVisible(self.family_name() == HALDEX)
+        self.no_backup.setVisible(self.family_name() in BACKUP_FAMILIES)
         problem = None
         if not family:
             problem = "Choose a module at the top."
@@ -346,7 +409,8 @@ class FlashPage(Page):
             problem = f"Flashing isn't supported for the {family['label']}."
         elif not self.state.identity and not self.recovery.isChecked():
             problem = "Identify the module on the Connect page first."
-        elif (self.state.record and not self.state.record.has_backup()
+        elif (self.family_name() in BACKUP_FAMILIES and self.state.record
+              and not self.state.record.has_backup()
               and not self.no_backup.isChecked() and not self.recovery.isChecked()):
             problem = "Make a backup on the Back up page first."
         self.gate.show_message(problem or "", "warning")
@@ -438,10 +502,13 @@ class FlashPage(Page):
             self.file_banner.show_message("\n".join(c["detail"] for c in warnings), "warning")
         else:
             self.file_banner.hide()
-        reference = self.state.record.state() if self.state.record else None
+        reference = None
+        if self.state.record and self.family_name() in BACKUP_FAMILIES:
+            reference = self.state.record.state()
         self.state.offline("plan_flash", {
             "path": self.path, "family": self.family_name(),
             "reference": str(reference) if reference else None,
+            "ecu_version": (self.state.identity or {}).get("sw_version"),
             "correct_checksum": self.correct.isChecked(),
             "simulator_mode": self.simulator.isChecked(),
         }, self._planned, self._file_error)
@@ -455,12 +522,19 @@ class FlashPage(Page):
             if item.widget():
                 item.widget().deleteLater()
         self.reason.setText("")
+        self.plan_notes.show_message("")
 
     def _planned(self, plan):
         self.plan = plan
         self._clear_options()
         self.reason.setText(plan["reason"])
+        self.plan_notes.show_message("\n\n".join(plan.get("notes") or []), "warning")
+        hidden = 0
         for option in plan["options"]:
+            if (plan["family"] == HALDEX and option["key"] != "full"
+                    and not self.advanced_toggle.isChecked()):
+                hidden += 1
+                continue
             text = f"{option['label']}   ·   {kib(option['size'])}"
             if option["key"] == plan.get("recommended"):
                 text += "   ·   recommended"
@@ -478,6 +552,8 @@ class FlashPage(Page):
             self.options_box.addWidget(hint)
             if option["key"] == plan.get("recommended"):
                 button.setChecked(True)
+        if hidden:
+            self.options_box.addWidget(muted(f"{hidden} smaller range(s) under advanced options."))
         self.refresh()
 
     # --- flashing ---
@@ -500,6 +576,8 @@ class FlashPage(Page):
         self.result_banner.show_message("Flashing. Don't touch the car, the cable or this computer.", "warning")
         self.progress.setValue(0)
         self.progress.show()
+        QTimer.singleShot(50, lambda: self.verticalScrollBar().setValue(self.verticalScrollBar().maximum()))
+        self.flashed_plan = dict(self.plan, flashed=option["key"])
         self.state.run("flash", params, lambda r: self._flashed(r, params, option), self._flash_failed)
 
     def on_progress(self, message):
@@ -536,7 +614,7 @@ class FlashPage(Page):
                    "turn on Recovery under advanced options and flash the same image again."
                    if needs_recovery else "\n\nNothing was erased."), "error")
             return
-        if record:
+        if record and self.family_name() in BACKUP_FAMILIES:
             reference = record.state()
             self.state.offline("compose_state", {
                 **{k: params[k] for k in ("correct_checksum", "simulator_mode")},
@@ -565,6 +643,22 @@ class FlashPage(Page):
         self.result_banner.show_message(
             f"Done. The module is running again: {self.state.part()} {identity.get('sw_version', '')}. "
             "Clear any fault codes the flash left behind with your usual scan tool.", "ok")
+        plan = getattr(self, "flashed_plan", None) or {}
+        if plan.get("needs_dataset") and plan.get("flashed") == "full":
+            self.result_banner.show_message(
+                self.result_banner.text() + "\n\nThis firmware came with the placeholder 000 "
+                "dataset. Flash a real steer dataset next.", "warning")
+            answer = QMessageBox.question(
+                self, "Flash a steer dataset",
+                "The firmware you flashed carries the factory placeholder dataset (000), so the "
+                "rack has no real steer dataset yet.\n\nChoose a dataset to flash now? Use a "
+                "4 KiB dataset file, or a full image (its 0x5E block will be used).")
+            if answer == QMessageBox.StandardButton.Yes:
+                path, _ = QFileDialog.getOpenFileName(self, "Choose steer dataset",
+                                                      self.drop.start_dir,
+                                                      "Firmware images (*.bin);;All files (*)")
+                if path:
+                    self.load(path)
 
     def _not_verified(self, error):
         self.progress.hide()

@@ -1,5 +1,6 @@
 """Top bar (interface + module), left navigation, page stack."""
 import ctypes
+import os
 import shutil
 import sys
 
@@ -59,7 +60,8 @@ class SleepBlocker:
 class MainWindow(QMainWindow):
     def __init__(self):
         super().__init__()
-        self.setWindowTitle("PQ35 Flasher")
+        self.demo = bool(os.environ.get("PQ35_DEMO"))
+        self.setWindowTitle("PQ35 Flasher (demo mode)" if self.demo else "PQ35 Flasher")
         self.resize(1040, 760)
         self.settings = Settings()
         self.pool = WorkerPool(self.settings, self)
@@ -112,6 +114,7 @@ class MainWindow(QMainWindow):
         self.state.busy_changed.connect(self._busy_changed)
         self.state.progress.connect(lambda m: self.busy_bar.setValue(int(m.get("percent", 0))))
         self.state.open_in_flash.connect(lambda _path: self.nav.setCurrentRow(2))
+        self.state.refresh_interfaces.connect(self.refresh_interfaces)
 
         native = self.pool.native()
         native.call("hello", {}, self._hello, self._worker_broken)
@@ -129,6 +132,8 @@ class MainWindow(QMainWindow):
         title = QLabel("PQ35 Flasher")
         title.setObjectName("title")
         layout.addWidget(title)
+        if os.environ.get("PQ35_DEMO"):
+            layout.addWidget(Badge("DEMO: no hardware", "info"))
         layout.addSpacing(12)
         layout.addWidget(muted("Interface"))
         self.interface_box = QComboBox()
@@ -225,7 +230,7 @@ class MainWindow(QMainWindow):
         has_family = state.family is not None
         enabled = {
             "connect": True, "log": True,
-            "backup": bool(state.identity),
+            "backup": bool(state.identity) and state.family["name"] in pages.BACKUP_FAMILIES,
             "flash": has_family and state.family.get("can_flash", False),
             "patches": has_family and state.family["name"] in (pages.EPS, pages.HALDEX),
             "diagnostics": bool(state.identity) and has_family
