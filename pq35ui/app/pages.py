@@ -959,8 +959,9 @@ class FlashPage(Page):
                                        "identity": identity})
             self.result_banner.show_message(
                 f"Confirmed after an ignition cycle: {self.state.part()} {version} "
-                f"({identity.get('system_desc', '')}). You're done. Clear any fault codes the "
-                "flash left behind with your usual scan tool.", "ok")
+                f"({identity.get('system_desc', '')}). You're done: go ahead and drive. Flashing "
+                "doesn't set fault codes, and any faults left from the module being offline "
+                "clear themselves once it's running normally.", "ok")
 
     def _dataset_prompt(self):
         plan = getattr(self, "flashed_plan", None) or {}
