@@ -628,10 +628,8 @@ class FlashPage(Page):
         if self.crossflash.isChecked() and self.sender() is self.crossflash:
             QMessageBox.warning(self, "Crossflash",
                                 "A crossflash puts firmware for a different part number on "
-                                "this module. It changes what the module identifies as, and "
-                                "usually needs extra steps afterwards (coding, basic settings, "
-                                "adaptation) before it works in the car.\n\n"
-                                "Only do this if you know those steps for your car.")
+                                "this module, and it won't work as before without further "
+                                "steps.\n\nOnly do this if you know exactly what your car needs.")
         if self.recovery.isChecked() and self.sender() is self.recovery:
             QMessageBox.warning(self, "Recovery mode",
                                 "Recovery skips every check that the module is what you think it "

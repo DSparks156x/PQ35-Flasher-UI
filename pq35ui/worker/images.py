@@ -158,8 +158,8 @@ def _base(part: str) -> str:
 
 def _part_check(check, family, data, found, ecu_part):
     """Same base part number: fine (a suffix is just another version).
-    Different base: a crossflash, which needs extra steps afterwards (coding,
-    adaptation) and is blocked unless explicitly allowed on the Flash page."""
+    Different base: a crossflash, which needs further steps and is blocked unless
+    explicitly allowed on the Flash page."""
     ecu = ecu_part.replace(" ", "").upper()
     image = None
     if family == EPS:
@@ -180,8 +180,8 @@ def _part_check(check, family, data, found, ecu_part):
     else:
         check("crossflash", False, f"Crossflash: {image} onto {ecu}",
               f"This image is for {image}; the connected ECU is {ecu}. Flashing a different "
-              "part number needs extra steps afterwards (coding, adaptation) and is blocked "
-              "unless you allow a crossflash under advanced options.")
+              "part number needs further steps and is blocked unless you allow a crossflash "
+              "under advanced options.")
 
 
 def _family_label(family: str) -> str:
