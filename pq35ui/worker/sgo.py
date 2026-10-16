@@ -1,7 +1,8 @@
 """Convert an EPS SGO (SGML Object File) into a 384 KiB CPU-linear image.
 
-Container layout and decoding follow unpack_firmware_sgos.py from
-pq-flasher (MIT License, Copyright (c) 2021 Willem Melching): a header,
+Container layout and decoding follow unpack_firmware_sgos.py in
+DSparks156x/pq-flasher (a fork of Willem Melching's pq-flasher, MIT License,
+Copyright (c) 2021 Willem Melching): a header,
 a metadata block, then sections of (24-bit address, 24-bit length, payload)
 whose payload is XORed with 0xFF and optionally run-length coded ("BCB").
 Areas no section covers stay 0xFF, exactly as that converter produces.
