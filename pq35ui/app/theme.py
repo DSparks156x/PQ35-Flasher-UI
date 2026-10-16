@@ -64,6 +64,9 @@ QPushButton:hover {{ background: {surface2}; }}
 QToolButton {{ background: {surface}; border: 1px solid {border}; border-radius: 6px;
     padding: 6px 12px; }}
 QToolButton:hover {{ background: {surface2}; }}
+QPushButton#chip {{ border-radius: 6px; padding: 6px 12px; }}
+QPushButton#chip[level="ok"] {{ background: {ok_bg}; color: {ok}; border: 1px solid {ok_bg}; }}
+QPushButton#chip[level="idle"] {{ background: {surface2}; color: {muted}; }}
 QToolButton::menu-indicator {{ image: none; width: 0; }}
 QPushButton:disabled {{ color: {muted}; }}
 QPushButton#primary {{ background: {accent}; color: white; border: none; font-weight: 600; }}

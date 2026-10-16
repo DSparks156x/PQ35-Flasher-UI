@@ -167,12 +167,11 @@ class MainWindow(QMainWindow):
         self.interface_button.setMenu(self.interface_menu)
         self.interface_group = QActionGroup(self)
         layout.addWidget(self.interface_button)
-        # Module: shows what's selected; click to change it on the Connect page.
-        self.module_button = QPushButton("Choose module")
-        self.module_button.setToolTip("Change module")
-        self.module_button.clicked.connect(lambda: self.nav.setCurrentRow(0))
-        layout.addWidget(self.module_button)
-        self.status = Badge("Not connected", "idle")
+        # The one module indicator; click it to change module on the Connect page.
+        self.status = QPushButton("No module")
+        self.status.setObjectName("chip")
+        self.status.setToolTip("Change module")
+        self.status.clicked.connect(lambda: self.nav.setCurrentRow(0))
         layout.addWidget(self.status)
         return bar
 
@@ -246,13 +245,17 @@ class MainWindow(QMainWindow):
 
     def _state_changed(self):
         state = self.state
-        self.module_button.setText((state.family["label"] if state.family else "Choose module") + "  ▾")
-        if state.identity:
-            self.status.set(f"{state.part()} · {state.identity.get('sw_version', '')}", "ok")
-        elif state.adapter and state.family:
-            self.status.set("Not identified", "idle")
+        if state.family and state.identity:
+            text, level = (f"{state.family['label']} · {state.part()} "
+                           f"{state.identity.get('sw_version', '')}"), "ok"
+        elif state.family:
+            text, level = f"{state.family['label']} · not identified", "idle"
         else:
-            self.status.set("Not connected", "idle")
+            text, level = "No module", "idle"
+        self.status.setText(text + "  ▾")
+        self.status.setProperty("level", level)
+        self.status.style().unpolish(self.status)
+        self.status.style().polish(self.status)
         has_family = state.family is not None
         enabled = {
             "connect": True, "log": True,
@@ -335,14 +338,14 @@ class MainWindow(QMainWindow):
 
     def _busy_changed(self, busy):
         self.update_button.setEnabled(not busy)
-        for widget in (self.interface_button, self.module_button):
+        for widget in (self.interface_button, self.status):
             widget.setEnabled(not busy)
         self.nav.setEnabled(not busy)
         self.busy_bar.setVisible(busy)
         self.busy_bar.setValue(0)
         if busy:
             self.sleep.hold()
-            self.status.set("Working…", "warning")
+            self.status.setText("Working…")
         else:
             self.sleep.release()
             self._state_changed()
