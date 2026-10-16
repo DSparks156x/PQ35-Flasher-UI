@@ -12,6 +12,7 @@ from PySide6.QtWidgets import (
 )
 
 from . import theme
+from .storage import images_dir
 
 
 def restyle(widget):
@@ -188,7 +189,7 @@ class DropZone(QFrame):
         self.detail.setTextInteractionFlags(Qt.TextInteractionFlag.TextSelectableByMouse)
         layout.addWidget(self.title)
         layout.addWidget(self.detail)
-        self.start_dir = str(Path.home())
+        self.start_dir = str(images_dir())
 
     def set_file(self, name, detail):
         self.title.setText(name)

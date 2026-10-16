@@ -16,7 +16,7 @@ from pathlib import Path
 from PySide6.QtCore import QObject, Signal
 
 from .. import __version__
-from .storage import REPO_ROOT, data_dir
+from .storage import REPO_ROOT, logs_dir
 
 REPO = "DSparks156x/PQ35-Flasher-UI"
 API = f"https://api.github.com/repos/{REPO}"
@@ -110,8 +110,7 @@ def launch_update() -> str:
             ["powershell", "-NoProfile", "-ExecutionPolicy", "Bypass", "-File", str(script)],
             cwd=str(REPO_ROOT), env=env, creationflags=subprocess.CREATE_NEW_CONSOLE)
         return "A window shows the update; the app reopens when it's done."
-    log = data_dir() / "logs" / "update.log"
-    log.parent.mkdir(exist_ok=True)
+    log = logs_dir() / "update.log"
     with open(log, "ab") as out:
         subprocess.Popen(["sh", str(REPO_ROOT / "install.sh")], cwd=str(REPO_ROOT), env=env,
                          stdout=out, stderr=subprocess.STDOUT, start_new_session=True)

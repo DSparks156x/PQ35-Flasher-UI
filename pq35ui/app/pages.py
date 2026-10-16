@@ -14,7 +14,7 @@ from PySide6.QtWidgets import (
     QScrollArea, QSpinBox, QTreeWidget, QTreeWidgetItem, QVBoxLayout, QWidget,
 )
 
-from .storage import data_dir, timestamp
+from .storage import logs_dir, patched_dir, prune_logs, timestamp
 from .widgets import Badge, Banner, Card, DropZone, FlowRow, HoldButton, ProgressPanel, h1, kib, muted, restyle
 
 HALDEX, EPS = "haldex-gen4", "pq-eps"
@@ -387,7 +387,7 @@ class BackupPage(Page):
         self.read_button.setObjectName("primary")
         self.read_button.clicked.connect(self.read)
         row.addWidget(self.read_button)
-        self.open_button = QPushButton("Open library folder")
+        self.open_button = QPushButton("Open module folder")
         self.open_button.clicked.connect(self.open_folder)
         row.addWidget(self.open_button)
         row.addStretch(1)
@@ -769,6 +769,11 @@ class FlashPage(Page):
                  "start": option["start"], "end": option["end"], "status": report.get("status"),
                  "boot_verified": report.get("boot_verified"), "recovery": params["recovery"],
                  "error": result.get("error")}
+        if record and report.get("checksum_verified"):
+            try:
+                entry["kept_copy"] = record.keep_flashed(self.path)
+            except OSError:
+                pass
         if record:
             record.add(entry)
         application = report.get("application") or {}
@@ -939,7 +944,7 @@ class PatchesPage(Page):
 
     def apply(self, feature):
         source = Path(self.path)
-        default = str(source.with_name(f"{source.stem}_{feature}{source.suffix}"))
+        default = str(patched_dir() / f"{source.stem}_{feature}{source.suffix}")
         out, _ = QFileDialog.getSaveFileName(self, "Save patched image", default, "Firmware (*.bin)")
         if not out:
             return
@@ -1050,9 +1055,10 @@ class LogPage(Page):
 
     def __init__(self, state, parent=None):
         super().__init__(state, parent)
-        self.log_dir = data_dir() / "logs"
-        self.log_dir.mkdir(exist_ok=True)
-        self.log_path = self.log_dir / f"session_{timestamp()}.log"
+        prune_logs(keep=20)
+        self.log_stamp = timestamp()
+        self.log_part = 1
+        self.log_path = logs_dir() / f"session_{self.log_stamp}.log"
         self.file = open(self.log_path, "a", encoding="utf-8")
         row = QHBoxLayout()
         self.verbose = QCheckBox("Show protocol detail")
@@ -1061,8 +1067,8 @@ class LogPage(Page):
         bundle = QPushButton("Save support bundle…")
         bundle.clicked.connect(self.save_bundle)
         row.addWidget(bundle)
-        folder = QPushButton("Open data folder")
-        folder.clicked.connect(lambda: QDesktopServices.openUrl(QUrl.fromLocalFile(str(data_dir()))))
+        folder = QPushButton("Open logs folder")
+        folder.clicked.connect(lambda: QDesktopServices.openUrl(QUrl.fromLocalFile(str(logs_dir()))))
         row.addWidget(folder)
         holder = QWidget()
         holder.setLayout(row)
@@ -1075,6 +1081,13 @@ class LogPage(Page):
 
     def write(self, line, show=True):
         stamped = time.strftime("%H:%M:%S ") + line
+        if self.file.tell() > 5 * 1024 * 1024:
+            # Roll over so one long session can't grow without bound.
+            self.file.close()
+            self.log_part += 1
+            self.log_path = logs_dir() / f"session_{self.log_stamp}_{self.log_part}.log"
+            self.file = open(self.log_path, "a", encoding="utf-8")
+            prune_logs(keep=20)
         self.file.write(stamped + "\n")
         self.file.flush()
         if show:

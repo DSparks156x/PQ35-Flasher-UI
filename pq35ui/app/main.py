@@ -5,7 +5,7 @@ from PySide6.QtCore import QLockFile
 from PySide6.QtWidgets import QApplication, QMessageBox
 
 from . import theme
-from .storage import data_dir
+from .storage import data_dir, migrate_old_library
 
 
 def main():
@@ -23,6 +23,7 @@ def main():
         QMessageBox.warning(None, "PQ35 Flasher", "PQ35 Flasher is already open.")
         return 1
 
+    migrate_old_library()
     from .main_window import MainWindow
     window = MainWindow()
     window.show()

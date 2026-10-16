@@ -113,13 +113,22 @@ PySide6 UI (64-bit)  ──JSON lines──▶  worker  ──▶  flasher (subm
 
 ## Where things are kept
 
-- Windows: `%LOCALAPPDATA%\PQ35-Flasher`
-- Linux: `~/.local/share/pq35-flasher`
-- macOS: `~/Library/Application Support/PQ35-Flasher`
+Your files go in **Documents/PQ35 Flasher** on every OS:
 
-That folder holds `library/<module>/` (backups, flash history, `state.bin`), `logs/`
-(one log per session) and `settings.json`. **Log → Save support bundle** zips the session
-log and module history (no firmware) for bug reports.
+| Folder | What's in it |
+|---|---|
+| `Modules/<module>/Backups` | Readouts of that module, one folder each |
+| `Modules/<module>/Flashed` | A copy of every image written to it, timestamped |
+| `Modules/<module>/history.json` | Backups and flashes, with results |
+| `Images` | Default place the file picker opens; keep your firmware here |
+| `Patched` | Where patched images are saved by default |
+| `Logs` | One log per session; the newest 20 are kept, each capped at 5 MB |
+
+A module's folder is named after its family and part number, not its software
+version, so backups stay with it across flashes. Demo mode uses `PQ35 Flasher/Demo`.
+Settings and lock files live in the per-user app-data folder (`%LOCALAPPDATA%\PQ35-Flasher`,
+`~/.local/share/pq35-flasher`, `~/Library/Application Support/PQ35-Flasher`).
+**Log → Save support bundle** zips the session log and module history (no firmware).
 
 ## Demo mode
 

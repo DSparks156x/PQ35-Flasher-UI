@@ -1,4 +1,9 @@
-"""Where the app keeps settings, logs and the per-ECU backup library."""
+"""Where things live.
+
+Your files (module backups, copies of flashed images, patched images, logs)
+go in "PQ35 Flasher" in your Documents folder on every OS, so they're easy to
+find. Settings and lock files stay in the per-user app-data folder.
+"""
 import json
 import os
 import re
@@ -26,6 +31,70 @@ def data_dir() -> Path:
     return path
 
 
+def user_dir() -> Path:
+    override = os.environ.get("PQ35_USER_DIR")
+    if override:
+        base = Path(override)
+    elif os.environ.get("PQ35_DATA_DIR"):
+        base = Path(os.environ["PQ35_DATA_DIR"]) / "user"  # tests and portable setups
+    else:
+        documents = ""
+        try:
+            from PySide6.QtCore import QStandardPaths
+            documents = QStandardPaths.writableLocation(QStandardPaths.StandardLocation.DocumentsLocation)
+        except Exception:
+            pass
+        base = Path(documents or Path.home() / "Documents") / "PQ35 Flasher"
+    if os.environ.get("PQ35_DEMO"):
+        base = base / "Demo"
+    for name in ("Modules", "Images", "Patched", "Logs"):
+        (base / name).mkdir(parents=True, exist_ok=True)
+    return base
+
+
+def modules_dir() -> Path:
+    return user_dir() / "Modules"
+
+
+def images_dir() -> Path:
+    return user_dir() / "Images"
+
+
+def patched_dir() -> Path:
+    return user_dir() / "Patched"
+
+
+def logs_dir() -> Path:
+    return user_dir() / "Logs"
+
+
+def migrate_old_library():
+    """Move module records from the old app-data location to Documents."""
+    old = data_dir() / "library"
+    if not old.is_dir():
+        return
+    for child in old.iterdir():
+        target = modules_dir() / child.name
+        if not target.exists():
+            try:
+                shutil.move(str(child), str(target))
+            except OSError:
+                pass
+    try:
+        old.rmdir()
+    except OSError:
+        pass
+
+
+def prune_logs(keep: int = 20):
+    logs = sorted(logs_dir().glob("session_*.log"), key=lambda p: p.stat().st_mtime, reverse=True)
+    for old in logs[keep:]:
+        try:
+            old.unlink()
+        except OSError:
+            pass
+
+
 def timestamp() -> str:
     return time.strftime("%Y%m%d-%H%M%S")
 
@@ -50,9 +119,10 @@ class Settings:
 
 
 def ecu_key(family: str, identity: dict) -> str:
+    """Folder name for one physical module. Not the software version: that
+    changes every time you flash, and the backups must stay with the module."""
     part = identity.get("software_part_number") or identity.get("part_number") or "unknown"
-    version = identity.get("sw_version") or identity.get("firmware_revision") or ""
-    raw = f"{family}_{part}_{version}"
+    raw = f"{family}_{part}"
     return re.sub(r"[^A-Za-z0-9_.-]+", "-", raw).strip("-")
 
 
@@ -66,7 +136,7 @@ class EcuRecord:
 
     def __init__(self, key: str):
         self.key = key
-        self.root = data_dir() / "library" / key
+        self.root = modules_dir() / key
         self.root.mkdir(parents=True, exist_ok=True)
         self.history_path = self.root / "history.json"
 
@@ -78,7 +148,7 @@ class EcuRecord:
         return self.state_path if self.state_path.is_file() else None
 
     def new_backup_dir(self) -> Path:
-        path = self.root / "backups" / timestamp()
+        path = self.root / "Backups" / timestamp()
         path.parent.mkdir(parents=True, exist_ok=True)
         return path
 
@@ -98,6 +168,13 @@ class EcuRecord:
 
     def has_backup(self) -> bool:
         return any(Path(e["image"]).is_file() for e in self.backups())
+
+    def keep_flashed(self, image: str) -> str:
+        """Keep a copy of every image flashed to this module."""
+        target = self.root / "Flashed" / f"{timestamp()}_{Path(image).name}"
+        target.parent.mkdir(parents=True, exist_ok=True)
+        shutil.copyfile(image, target)
+        return str(target)
 
     def adopt_readout(self, image: str):
         shutil.copyfile(image, self.state_path)
