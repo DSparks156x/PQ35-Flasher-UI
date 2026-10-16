@@ -39,6 +39,17 @@ in the install folder:
 
 From a checkout: `git clone --recurse-submodules …`, then `.\install.ps1` or `./install.sh`.
 
+## Updating
+
+The bottom-left corner shows the installed version (and the flasher commit). Press
+**Check for updates**: if GitHub has something newer, it lists what changed and offers
+**Update now**. That closes the app, runs the installer in update mode (pulls, or
+re-downloads a zip install, re-syncs, keeps your shortcuts and data), and reopens the app.
+On Windows you see the update in a console window. Updating is blocked while the app is
+talking to a module.
+
+Re-running the one-line installer does the same thing by hand.
+
 ## Adapters
 
 | Adapter | Windows | Linux | macOS |

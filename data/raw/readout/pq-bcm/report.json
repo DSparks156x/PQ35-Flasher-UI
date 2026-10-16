@@ -1,0 +1,17 @@
+{
+  "adapter": "j2534",
+  "baud": 500000,
+  "bus": 0,
+  "captured": {},
+  "cleanup_errors": [],
+  "controller_family": "pq-bcm",
+  "error": "MessageTimeoutError: Timed out waiting for channel setup response from module 0x20",
+  "hardware_access": true,
+  "live_protocol_validated": false,
+  "module": 32,
+  "operation": "identify",
+  "output": "data\\raw\\readout\\pq-bcm",
+  "status": "capture_failed",
+  "subsystem_reads_requested": false,
+  "targets": {}
+}

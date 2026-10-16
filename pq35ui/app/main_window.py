@@ -10,7 +10,7 @@ from PySide6.QtWidgets import (
     QMessageBox, QProgressBar, QPushButton, QStackedWidget, QVBoxLayout, QWidget,
 )
 
-from . import pages
+from . import pages, updates
 from .client import WorkerPool
 from .state import AppState
 from .storage import Settings
@@ -85,9 +85,23 @@ class MainWindow(QMainWindow):
         self.nav = QListWidget()
         self.nav.setObjectName("navlist")
         nav_layout.addWidget(self.nav)
-        self.version_label = muted("")
-        self.version_label.setContentsMargins(14, 0, 8, 0)
-        nav_layout.addWidget(self.version_label)
+        footer = QVBoxLayout()
+        footer.setContentsMargins(12, 0, 10, 0)
+        footer.setSpacing(4)
+        self.local_version = updates.local_version()
+        commit = (self.local_version.get("commit") or "unknown")[:7]
+        self.version_label = QLabel(f"Version {self.local_version['version']} · {commit}")
+        self.version_label.setTextInteractionFlags(Qt.TextInteractionFlag.TextSelectableByMouse)
+        self.runtime_label = muted("")
+        self.update_status = muted("")
+        self.update_button = QPushButton("Check for updates")
+        self.update_button.clicked.connect(self._update_clicked)
+        for widget in (self.version_label, self.runtime_label, self.update_status, self.update_button):
+            footer.addWidget(widget)
+        nav_layout.addLayout(footer)
+        self.update_info = None
+        self.checker = updates.UpdateChecker(self)
+        self.checker.finished.connect(self._update_checked)
         body.addWidget(nav)
 
         self.stack = QStackedWidget()
@@ -207,8 +221,8 @@ class MainWindow(QMainWindow):
 
     def _hello(self, info):
         self.state.hello = info
-        self.version_label.setText(f"flasher {info.get('flasher_commit') or '?'}\n"
-                                   f"Python {info.get('python')} ({info.get('bits')}-bit)")
+        self.runtime_label.setText(f"flasher {(info.get('flasher_commit') or '?')[:7]} · "
+                                   f"Py {info.get('python')}")
         self.state.changed.emit()
 
     def _worker_broken(self, error):
@@ -244,7 +258,71 @@ class MainWindow(QMainWindow):
         if not self.nav.currentItem() or not (self.nav.currentItem().flags() & Qt.ItemFlag.ItemIsEnabled):
             self.nav.setCurrentRow(0)
 
+    # --- updates ---
+
+    def _update_clicked(self):
+        info = self.update_info or {}
+        if info.get("status") in ("behind", "unknown_local"):
+            self._run_update(info)
+            return
+        self.update_button.setEnabled(False)
+        self.update_button.setText("Checking…")
+        self.update_status.setText("")
+        self.checker.start(self.local_version)
+
+    def _update_checked(self, info):
+        self.update_info = info
+        self.update_button.setEnabled(not self.state.busy)
+        self.update_button.setObjectName("")
+        status = info.get("status")
+        if status == "behind":
+            count = info.get("behind_by") or len(info.get("changes", []))
+            self.update_status.setText(f"{count} update{'s' if count != 1 else ''} available")
+            self.update_button.setText("Update now")
+            self.update_button.setObjectName("primary")
+        elif status == "unknown_local":
+            self.update_status.setText("Can't tell which version this is.")
+            self.update_button.setText("Update now")
+        elif status == "identical":
+            self.update_status.setText("Up to date")
+            self.update_button.setText("Check again")
+        elif status in ("ahead", "local_only"):
+            self.update_status.setText("Development version (newer than GitHub)")
+            self.update_button.setText("Check again")
+        elif status == "diverged":
+            self.update_status.setText("Local changes. Update from a terminal.")
+            self.update_button.setText("Check again")
+        else:
+            self.update_status.setText("Couldn't reach GitHub.")
+            self.update_button.setToolTip(info.get("error", ""))
+            self.update_button.setText("Try again")
+        self.update_button.style().unpolish(self.update_button)
+        self.update_button.style().polish(self.update_button)
+
+    def _run_update(self, info):
+        if self.state.busy:
+            QMessageBox.warning(self, "Update", "Wait for the current operation to finish first.")
+            return
+        changes = info.get("changes") or []
+        listing = "\n".join(f"• {c}" for c in changes[:12])
+        if len(changes) > 12:
+            listing += f"\n• …and {len(changes) - 12} more"
+        answer = QMessageBox.question(
+            self, "Update PQ35 Flasher",
+            "PQ35 Flasher will close, update and reopen."
+            + (f"\n\nWhat's new:\n{listing}" if listing else ""))
+        if answer != QMessageBox.StandardButton.Yes:
+            return
+        try:
+            note = updates.launch_update()
+        except OSError as exc:
+            QMessageBox.critical(self, "Update", f"Couldn't start the updater: {exc}")
+            return
+        self.update_status.setText(note)
+        self.close()
+
     def _busy_changed(self, busy):
+        self.update_button.setEnabled(not busy)
         for widget in (self.interface_box, self.module_box, self.refresh_button):
             widget.setEnabled(not busy)
         self.nav.setEnabled(not busy)

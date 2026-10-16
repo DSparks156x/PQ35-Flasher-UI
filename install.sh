@@ -5,7 +5,10 @@
 #
 # or ./install.sh from a checkout. Re-run it any time to update. No root needed.
 # Set PQ35_YES=1 to accept every question (shortcuts) without asking.
+# The app's "Update" button runs this with PQ35_UPDATE=1 and PQ35_WAIT_PID set:
+# it waits for the app to close, updates without asking anything, and reopens it.
 set -eu
+UPDATING="${PQ35_UPDATE:-}"
 
 REPO="DSparks156x/PQ35-Flasher-UI"
 OS=$(uname)
@@ -28,11 +31,20 @@ ask() {
     case "$answer" in [Nn]*) return 1 ;; *) return 0 ;; esac
 }
 
+if [ -n "${PQ35_WAIT_PID:-}" ]; then
+    step "Waiting for PQ35 Flasher to close"
+    i=0
+    while kill -0 "$PQ35_WAIT_PID" 2>/dev/null && [ $i -lt 60 ]; do sleep 1; i=$((i + 1)); done
+fi
+
 here=$(CDPATH= cd -- "$(dirname -- "$0")" 2>/dev/null && pwd || true)
 if [ -n "$here" ] && [ -f "$here/pyproject.toml" ]; then
     APP_DIR="$here"
     step "Using this checkout: $APP_DIR"
-    [ -d "$APP_DIR/.git" ] && git -C "$APP_DIR" submodule update --init --recursive
+    if [ -d "$APP_DIR/.git" ]; then
+        [ -n "$UPDATING" ] && git -C "$APP_DIR" pull --ff-only
+        git -C "$APP_DIR" submodule update --init --recursive
+    fi
 else
     if ! command -v git >/dev/null; then
         if [ "$OS" = "Darwin" ]; then
@@ -70,6 +82,12 @@ cat > "$APP_DIR/pq35-flasher" <<EOF
 cd "$APP_DIR" && exec "$PYTHON" -m pq35ui "\$@"
 EOF
 chmod +x "$APP_DIR/pq35-flasher"
+
+if [ -n "$UPDATING" ]; then
+    step "Updated. Reopening PQ35 Flasher"
+    nohup "$APP_DIR/pq35-flasher" >/dev/null 2>&1 &
+    exit 0
+fi
 
 if [ "$OS" = "Darwin" ]; then
     if ask "Add PQ35 Flasher to your Applications folder?"; then

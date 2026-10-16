@@ -6,3 +6,4 @@ pq35-flasher
 dist/
 build/
 *.egg-info/
+.install-commit

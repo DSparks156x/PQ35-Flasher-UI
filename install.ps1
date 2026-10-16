@@ -6,6 +6,9 @@
 # Installs uv (per-user), a private 64-bit Python for the app, a private 32-bit
 # Python for J2534 adapters, and (if you say yes) Start menu and desktop
 # shortcuts. No admin needed. Set PQ35_YES=1 to accept every question.
+#
+# The app's "Update" button runs this with PQ35_UPDATE=1 and PQ35_WAIT_PID set:
+# it waits for the app to close, updates without asking anything, and reopens it.
 
 $ErrorActionPreference = "Stop"
 $Repo = "DSparks156x/PQ35-Flasher-UI"
@@ -19,20 +22,41 @@ function Ask($question) {
     return -not ($answer -match '^\s*[Nn]')
 }
 
+$Updating = [bool]$env:PQ35_UPDATE
+if ($Updating) {
+    trap {
+        Write-Host "Update failed: $_" -ForegroundColor Red
+        Read-Host "Press Enter to close"
+        exit 1
+    }
+}
+if ($env:PQ35_WAIT_PID) {
+    Step "Waiting for PQ35 Flasher to close"
+    try { Wait-Process -Id ([int]$env:PQ35_WAIT_PID) -Timeout 60 -ErrorAction Stop } catch { }
+}
+
 # 1. Find or fetch the app.
 $here = if ($PSScriptRoot) { $PSScriptRoot } else { $null }
-if ($here -and (Test-Path (Join-Path $here "pyproject.toml"))) {
+$hasGit = [bool](Get-Command git -ErrorAction SilentlyContinue)
+# A zip install updating itself has no .git: re-download it like a fresh zip install.
+$zipUpdate = $Updating -and $here -and -not (Test-Path (Join-Path $here ".git"))
+if ($here -and (Test-Path (Join-Path $here "pyproject.toml")) -and -not $zipUpdate) {
     $AppDir = $here
     Step "Using this checkout: $AppDir"
     if ((Test-Path (Join-Path $AppDir ".git")) -and (Get-Command git -ErrorAction SilentlyContinue)) {
+        if ($Updating) {
+            git -C $AppDir pull --ff-only
+            if ($LASTEXITCODE -ne 0) { throw "git pull failed (local changes or a diverged branch?)" }
+        }
         git -C $AppDir submodule update --init --recursive
     }
 } else {
-    $AppDir = Join-Path $InstallDir "app"
-    if (Get-Command git -ErrorAction SilentlyContinue) {
+    $AppDir = if ($zipUpdate) { $here } else { Join-Path $InstallDir "app" }
+    if ($hasGit -and -not $zipUpdate) {
         if (Test-Path (Join-Path $AppDir ".git")) {
             Step "Updating $AppDir"
             git -C $AppDir pull --ff-only
+            if ($LASTEXITCODE -ne 0) { throw "git pull failed" }
             git -C $AppDir submodule update --init --recursive
         } else {
             Step "Downloading into $AppDir"
@@ -44,7 +68,8 @@ if ($here -and (Test-Path (Join-Path $here "pyproject.toml"))) {
         Step "Downloading into $AppDir (git not found, using zip downloads)"
         $tmp = Join-Path $env:TEMP ("pq35-" + [guid]::NewGuid())
         New-Item -ItemType Directory -Force $tmp | Out-Null
-        Invoke-WebRequest "https://github.com/$Repo/archive/refs/heads/main.zip" -OutFile "$tmp\app.zip"
+        $head = (Invoke-RestMethod "https://api.github.com/repos/$Repo/commits/main").sha
+        Invoke-WebRequest "https://github.com/$Repo/archive/$head.zip" -OutFile "$tmp\app.zip"
         $sub = Invoke-RestMethod "https://api.github.com/repos/$Repo/contents/flasher?ref=main"
         $flasherRepo = ($sub.submodule_git_url -replace '^https://github.com/', '') -replace '\.git$', ''
         Invoke-WebRequest "https://github.com/$flasherRepo/archive/$($sub.sha).zip" -OutFile "$tmp\flasher.zip"
@@ -59,6 +84,8 @@ if ($here -and (Test-Path (Join-Path $here "pyproject.toml"))) {
         $flasherDir = Join-Path $AppDir "flasher"
         if (Test-Path $flasherDir) { Remove-Item -Recurse -Force $flasherDir }
         Copy-Item -Recurse "$((Get-ChildItem "$tmp\flasher")[0].FullName)" $flasherDir
+        # Lets the app tell which version a zip install is on.
+        Set-Content -Path (Join-Path $AppDir ".install-commit") -Value $head -Encoding ASCII -NoNewline
         Remove-Item -Recurse -Force $tmp
     }
 }
@@ -96,10 +123,12 @@ if ($py32 -and (Test-Path $py32)) {
 $pythonw = Join-Path $AppDir ".venv\Scripts\pythonw.exe"
 $shell = New-Object -ComObject WScript.Shell
 $targets = @()
-if (Ask "Add PQ35 Flasher to the Start menu?") {
+if ($Updating) {
+    # Updates keep whatever shortcuts already exist.
+} elseif (Ask "Add PQ35 Flasher to the Start menu?") {
     $targets += Join-Path ([Environment]::GetFolderPath("Programs")) "PQ35 Flasher.lnk"
 }
-if (Ask "Add a desktop shortcut?") {
+if (-not $Updating -and (Ask "Add a desktop shortcut?")) {
     $targets += Join-Path ([Environment]::GetFolderPath("Desktop")) "PQ35 Flasher.lnk"
 }
 foreach ($path in $targets) {
@@ -109,6 +138,13 @@ foreach ($path in $targets) {
     $link.WorkingDirectory = $AppDir
     $link.Description = "PQ35 Flasher"
     $link.Save()
+}
+
+if ($Updating) {
+    Write-Host "PQ35 Flasher is updated. Reopening it..." -ForegroundColor Green
+    Start-Process -FilePath $pythonw -ArgumentList "-m", "pq35ui" -WorkingDirectory $AppDir
+    Start-Sleep -Seconds 2
+    exit 0
 }
 
 Write-Host ""
