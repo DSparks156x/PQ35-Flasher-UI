@@ -1,7 +1,7 @@
 import os
 import sys
 
-from PySide6.QtCore import QLockFile
+from PySide6.QtCore import QLockFile, QTimer
 from PySide6.QtWidgets import QApplication, QMessageBox
 
 from . import theme
@@ -27,6 +27,14 @@ def main():
     from .main_window import MainWindow
     window = MainWindow()
     window.show()
+
+    def acknowledge():
+        from .disclaimer import confirm
+        if not confirm(window):
+            window.close()
+
+    # Every start: the disclaimer over the dimmed window, once it has painted.
+    QTimer.singleShot(150, acknowledge)
     code = app.exec()
     lock.unlock()
     return code
