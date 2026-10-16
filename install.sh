@@ -92,7 +92,8 @@ fi
 if [ "$OS" = "Darwin" ]; then
     if ask "Add PQ35 Flasher to your Applications folder?"; then
         bundle="$HOME/Applications/PQ35 Flasher.app"
-        mkdir -p "$bundle/Contents/MacOS"
+        mkdir -p "$bundle/Contents/MacOS" "$bundle/Contents/Resources"
+        cp "$APP_DIR/pq35ui/assets/icon.icns" "$bundle/Contents/Resources/icon.icns"
         cat > "$bundle/Contents/MacOS/PQ35 Flasher" <<EOF
 #!/bin/sh
 cd "$APP_DIR" && exec "$PYTHON" -m pq35ui
@@ -106,6 +107,7 @@ EOF
   <key>CFBundleExecutable</key><string>PQ35 Flasher</string>
   <key>CFBundleIdentifier</key><string>com.dsparks156x.pq35flasher</string>
   <key>CFBundlePackageType</key><string>APPL</string>
+  <key>CFBundleIconFile</key><string>icon</string>
   <key>NSHighResolutionCapable</key><true/>
 </dict></plist>
 EOF
@@ -120,6 +122,7 @@ Name=PQ35 Flasher
 Comment=Flash and back up PQ35 Haldex and EPS modules
 Exec="$APP_DIR/pq35-flasher"
 Path=$APP_DIR
+Icon=$APP_DIR/pq35ui/assets/icon.png
 Terminal=false
 Categories=Utility;Development;
 EOF

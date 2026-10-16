@@ -97,9 +97,14 @@ class MainWindow(QMainWindow):
         self.version_label.setTextInteractionFlags(Qt.TextInteractionFlag.TextSelectableByMouse)
         self.runtime_label = muted("")
         self.update_status = muted("")
+        credit = QLabel(f'Made by Raccoons<br><a href="https://github.com/{updates.REPO}">GitHub</a>')
+        credit.setObjectName("muted")
+        credit.setOpenExternalLinks(True)
+        credit.setTextInteractionFlags(Qt.TextInteractionFlag.TextBrowserInteraction)
         self.update_button = QPushButton("Check for updates")
         self.update_button.clicked.connect(self._update_clicked)
-        for widget in (self.version_label, self.runtime_label, self.update_status, self.update_button):
+        for widget in (self.version_label, self.runtime_label, credit, self.update_status,
+                       self.update_button):
             footer.addWidget(widget)
         nav_layout.addLayout(footer)
         self.update_info = None
@@ -229,8 +234,8 @@ class MainWindow(QMainWindow):
 
     def _hello(self, info):
         self.state.hello = info
-        self.runtime_label.setText(f"flasher {(info.get('flasher_commit') or '?')[:7]} · "
-                                   f"Py {info.get('python')}")
+        python = ".".join(str(info.get("python", "?")).split(".")[:2])
+        self.runtime_label.setText(f"flasher {(info.get('flasher_commit') or '?')[:7]} · Py {python}")
         self.state.changed.emit()
 
     def _worker_broken(self, error):

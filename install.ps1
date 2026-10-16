@@ -123,13 +123,16 @@ if ($py32 -and (Test-Path $py32)) {
 $pythonw = Join-Path $AppDir ".venv\Scripts\pythonw.exe"
 $shell = New-Object -ComObject WScript.Shell
 $targets = @()
+$startMenu = Join-Path ([Environment]::GetFolderPath("Programs")) "PQ35 Flasher.lnk"
+$desktop = Join-Path ([Environment]::GetFolderPath("Desktop")) "PQ35 Flasher.lnk"
 if ($Updating) {
-    # Updates keep whatever shortcuts already exist.
+    # Never adds shortcuts, but refreshes the ones you have (e.g. a new icon).
+    $targets = @(@($startMenu, $desktop) | Where-Object { Test-Path $_ })
 } elseif (Ask "Add PQ35 Flasher to the Start menu?") {
-    $targets += Join-Path ([Environment]::GetFolderPath("Programs")) "PQ35 Flasher.lnk"
+    $targets += $startMenu
 }
 if (-not $Updating -and (Ask "Add a desktop shortcut?")) {
-    $targets += Join-Path ([Environment]::GetFolderPath("Desktop")) "PQ35 Flasher.lnk"
+    $targets += $desktop
 }
 foreach ($path in $targets) {
     $link = $shell.CreateShortcut($path)
@@ -137,6 +140,7 @@ foreach ($path in $targets) {
     $link.Arguments = "-m pq35ui"
     $link.WorkingDirectory = $AppDir
     $link.Description = "PQ35 Flasher"
+    $link.IconLocation = (Join-Path $AppDir "pq35ui\assets\icon.ico") + ",0"
     $link.Save()
 }
 

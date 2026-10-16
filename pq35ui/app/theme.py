@@ -40,6 +40,7 @@ def apply(app):
             (QPalette.ColorRole.PlaceholderText, "muted")):
         palette.setColor(role, QColor(c[key]))
     palette.setColor(QPalette.ColorRole.HighlightedText, QColor("#ffffff"))
+    palette.setColor(QPalette.ColorRole.Link, QColor(c["accent"]))
     app.setPalette(palette)
     app.setStyleSheet(STYLE.format(**c))
 
