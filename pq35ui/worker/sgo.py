@@ -7,7 +7,9 @@ a metadata block, then sections of (24-bit address, 24-bit length, payload)
 whose payload is XORed with 0xFF and optionally run-length coded ("BCB").
 Areas no section covers stay 0xFF, exactly as that converter produces.
 
-Only PQ35 EPS racks are accepted. Other controllers' SGOs (for example
+Steer-dataset SGOs (a 0x5E block, no code) become a 4 KiB dataset file; any 0x5D
+block or low-address records they carry are left out. Gen2 (<3000) datasets
+are refused. Only PQ35 EPS racks are accepted. Other controllers' SGOs (for example
 5N1909144 PQ46 racks, whose sections lie above 0x60000) are refused.
 """
 import re
@@ -80,9 +82,35 @@ def header_name(data: bytes) -> str:
     return names[0].decode() if names else ""
 
 
+DATASET_START, DATASET_SIZE = 0x5E000, 0x1000
+CONFIG_START = 0x5D000
+FLASH_START = 0x0A000
+CRC_MARKER = bytes.fromhex("78563412")
+
+
+def _dataset_only(parts) -> bool:
+    """A steer-dataset SGO: a 0x5E block and no firmware code. Some (v074N...)
+    also carry a 0x5D block and two small low-address records; only 0x5E is used."""
+    has_dataset = any(a == DATASET_START and len(p) == DATASET_SIZE for a, p in parts)
+    code = [a for a, _ in parts if FLASH_START <= a < EPS_IMAGE_SIZE
+            and a not in (DATASET_START, CONFIG_START)]
+    return has_dataset and not code
+
+
 def convert_eps(path: str, out: str) -> dict:
     data = Path(path).read_bytes()
     parts = sections(data)
+    if _dataset_only(parts):
+        dataset = next(p for a, p in parts if a == DATASET_START)
+        if dataset[-8:-4] == CRC_MARKER:
+            raise ValueError(
+                "This is a steer dataset for firmware below 3000 (its CRC marker sits at the "
+                "end of the block). 0x5E datasets are only flashed onto 3000+ firmware.")
+        Path(out).write_bytes(dataset)
+        ignored = [f"0x{a:05X}" for a, _ in parts if a != DATASET_START]
+        return {"out": str(Path(out).resolve()), "sections": len(parts), "kind": "dataset",
+                "source_name": header_name(data), "part": "0x5E steer dataset",
+                "ignored_sections": ignored}
     image = bytearray(b"\xFF" * EPS_IMAGE_SIZE)
     for address, payload in parts:
         if address + len(payload) > EPS_IMAGE_SIZE:
@@ -92,6 +120,11 @@ def convert_eps(path: str, out: str) -> dict:
         image[address:address + len(payload)] = payload
     part = PQ35_EPS_PART.search(bytes(image))
     if not part:
+        covered = sum(len(p) for a, p in parts if a >= FLASH_START)
+        if covered < 0x10000:
+            spans = ", ".join(f"{len(p)} bytes at 0x{a:05X}" for a, p in parts if a >= FLASH_START)
+            raise ValueError(f"This SGO only patches part of the firmware ({spans}). "
+                             "Partial firmware SGOs aren't supported; use a full one.")
         raise ValueError("This SGO doesn't contain a PQ35 EPS rack (1K0/8J0 909 144) firmware.")
     Path(out).write_bytes(bytes(image))
     return {"out": str(Path(out).resolve()), "sections": len(parts),

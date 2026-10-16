@@ -70,8 +70,11 @@ button on the Connect page. It runs `ip link set … up type can bitrate 500000`
 
 ## SGO files (EPS)
 
-Pick or drop an EPS `.sgo` and it's converted to a 384 KiB `.bin` in
-`Documents/PQ35 Flasher/Images` first. Everything after that (checks, patches,
+Pick or drop an EPS `.sgo` and it's converted to a `.bin` in
+`Documents/PQ35 Flasher/Images` first: a full firmware SGO becomes a 384 KiB image, a
+steer-dataset SGO becomes a 4 KiB 0x5E dataset. Some dataset SGOs (v074N…) also carry a
+0x5D block and two small low-address records; only the 0x5E block is used. Gen2
+datasets (firmware below 3000) and partial-code SGOs are refused. Everything after that (checks, patches,
 flashing) uses the `.bin`, which goes through exactly the same rules as any other
 image. Only PQ35 racks (1K0/8J0 909 144) are accepted; SGOs for other controllers,
 such as 5N1 909 144 PQ46 racks, are refused. The converter follows
