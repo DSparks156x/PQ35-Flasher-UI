@@ -189,11 +189,11 @@ class Server:
         if method == "hello":
             return self.hello()
         if method == "list_interfaces":
-            found = discovery.list_interfaces()
             if os.environ.get("PQ35_DEMO"):
+                # Demo mode never offers real hardware, so it can't be driven by mistake.
                 from .demo import adapter_entry
-                found.insert(0, adapter_entry())
-            return found
+                return [adapter_entry()]
+            return discovery.list_interfaces()
         if method == "families":
             return self.families()
         if method == "inspect_image":

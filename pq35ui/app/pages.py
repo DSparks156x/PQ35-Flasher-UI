@@ -10,12 +10,12 @@ from PySide6.QtCore import QProcess, Qt, QTimer, QUrl
 from PySide6.QtGui import QDesktopServices
 from PySide6.QtWidgets import (
     QButtonGroup, QCheckBox, QFileDialog, QGridLayout, QHBoxLayout, QInputDialog, QLabel,
-    QListWidget, QMessageBox, QPlainTextEdit, QProgressBar, QPushButton, QRadioButton,
+    QListWidget, QMessageBox, QPlainTextEdit, QPushButton, QRadioButton,
     QScrollArea, QSpinBox, QTreeWidget, QTreeWidgetItem, QVBoxLayout, QWidget,
 )
 
 from .storage import data_dir, timestamp
-from .widgets import Banner, Card, DropZone, FlowRow, HoldButton, h1, kib, muted
+from .widgets import Banner, Card, DropZone, FlowRow, HoldButton, ProgressPanel, h1, kib, muted
 
 HALDEX, EPS = "haldex-gen4", "pq-eps"
 # Modules whose firmware can be read back over OBD. EPS racks can't, so there
@@ -213,9 +213,9 @@ class BackupPage(Page):
     def __init__(self, state, parent=None):
         super().__init__(state, parent)
         card = self.add(Card("Read the module"))
-        card.add(muted("Copies the firmware off the module into your library. The flasher uses "
-                       "it to work out the smallest safe range to write, and it's your way back "
-                       "if a tune misbehaves. Takes a few minutes. Nothing is written."))
+        card.add(muted("Copies the firmware off the module into your library. It's your way "
+                       "back if a tune misbehaves, and new images are compared against it. "
+                       "Takes about 7 minutes over OBD. Nothing is written."))
         row = QHBoxLayout()
         self.read_button = QPushButton("Read module")
         self.read_button.setObjectName("primary")
@@ -226,9 +226,7 @@ class BackupPage(Page):
         row.addWidget(self.open_button)
         row.addStretch(1)
         card.add(row)
-        self.progress = card.add(QProgressBar())
-        self.progress.hide()
-        self.stage = card.add(muted(""))
+        self.progress = card.add(ProgressPanel())
         self.banner = card.add(Banner())
         history = self.add(Card("Backups of this module"))
         self.list = history.add(QListWidget())
@@ -257,10 +255,8 @@ class BackupPage(Page):
             self.list.addItem("No backups yet.")
 
     def on_progress(self, message):
-        if self.isVisible() and self.state.busy:
-            self.progress.show()
-            self.progress.setValue(int(message.get("percent", 0)))
-            self.stage.setText(f"{message.get('stage', '').strip()}  {message.get('detail', '')}")
+        if self.progress.isVisibleTo(self) and self.state.busy:
+            self.progress.update_from(message)
 
     def open_folder(self):
         if self.state.record:
@@ -270,12 +266,10 @@ class BackupPage(Page):
         record = self.state.record
         out = record.new_backup_dir()
         self.banner.show_message("Reading… keep the ignition on and don't unplug anything.", "info")
-        self.progress.setValue(0)
-        self.progress.show()
+        self.progress.start("Connecting")
 
         def done(result):
-            self.progress.hide()
-            self.stage.setText("")
+            self.progress.stop()
             report = result.get("result") or {}
             status = report.get("status", "unknown")
             image = result.get("image")
@@ -302,7 +296,7 @@ class BackupPage(Page):
             self.refresh()
 
         def failed(error):
-            self.progress.hide()
+            self.progress.stop()
             self.banner.show_message(self.error_text(error), "error")
 
         self.state.run("readout", {"out": str(out)}, done, failed)
@@ -363,9 +357,7 @@ class FlashPage(Page):
         self.summary = go.add(muted(""))
         self.flash_button = go.add(HoldButton("Hold to flash", seconds=3))
         self.flash_button.confirmed.connect(self.flash)
-        self.progress = go.add(QProgressBar())
-        self.progress.hide()
-        self.stage = go.add(muted(""))
+        self.progress = go.add(ProgressPanel())
         self.result_banner = go.add(Banner())
         self.finish()
         state.progress.connect(self.on_progress)
@@ -574,21 +566,17 @@ class FlashPage(Page):
                   "simulator_mode": self.simulator.isChecked(),
                   "recovery": self.recovery.isChecked()}
         self.result_banner.show_message("Flashing. Don't touch the car, the cable or this computer.", "warning")
-        self.progress.setValue(0)
-        self.progress.show()
+        self.progress.start("Connecting")
         QTimer.singleShot(50, lambda: self.verticalScrollBar().setValue(self.verticalScrollBar().maximum()))
         self.flashed_plan = dict(self.plan, flashed=option["key"])
         self.state.run("flash", params, lambda r: self._flashed(r, params, option), self._flash_failed)
 
     def on_progress(self, message):
-        if self.isVisible() and self.state.busy:
-            self.progress.setValue(int(message.get("percent", 0)))
-            eta = message.get("eta_sec") or 0
-            self.stage.setText(f"{message.get('stage', '').strip().title()}   {message.get('detail', '')}"
-                               + (f"   ~{eta:.0f} s left" if eta else ""))
+        if self.progress.isVisibleTo(self) and self.state.busy:
+            self.progress.update_from(message)
 
     def _flash_failed(self, error):
-        self.progress.hide()
+        self.progress.stop()
         self.result_banner.show_message(
             "The flash didn't start or the worker stopped: " + self.error_text(error)
             + "\n\nIf the module no longer identifies, it is waiting in its bootloader. "
@@ -604,7 +592,7 @@ class FlashPage(Page):
         if record:
             record.add(entry)
         if result.get("error") or report.get("status") != "ok":
-            self.progress.hide()
+            self.progress.stop()
             needs_recovery = report.get("recovery_required", True)
             if record:
                 record.forget_state()
@@ -622,7 +610,7 @@ class FlashPage(Page):
                 "end": option["end"], "reference": str(reference) if reference else None,
                 "out": str(record.state_path) + ".new"},
                 lambda r: self._state_written(r, record), lambda e: record.forget_state())
-        self.stage.setText("Checking the module boots…")
+        self.progress.start("Checking the module boots")
         self.state.run("identify", {}, self._verified, self._not_verified)
 
     def _state_written(self, result, record):
@@ -633,8 +621,7 @@ class FlashPage(Page):
             record.forget_state()
 
     def _verified(self, result):
-        self.progress.hide()
-        self.stage.setText("")
+        self.progress.stop()
         identity = result.get("result") or {}
         if result.get("error") or result.get("exit_code"):
             self._not_verified({"message": result.get("error")})
@@ -661,7 +648,7 @@ class FlashPage(Page):
                     self.load(path)
 
     def _not_verified(self, error):
-        self.progress.hide()
+        self.progress.stop()
         self.result_banner.show_message(
             "The flash finished, but a fresh identification failed: " + self.error_text(error)
             + "\nCycle the ignition and press Identify on the Connect page.", "warning")

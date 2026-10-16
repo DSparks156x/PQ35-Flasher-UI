@@ -1,10 +1,13 @@
 """Small reusable widgets."""
+import re
+import time
 from pathlib import Path
 
 from PySide6.QtCore import QElapsedTimer, Qt, QTimer, Signal
 from PySide6.QtGui import QColor, QPainter
 from PySide6.QtWidgets import (
-    QFileDialog, QFrame, QHBoxLayout, QLabel, QLayout, QPushButton, QSizePolicy, QVBoxLayout,
+    QFileDialog, QFrame, QHBoxLayout, QLabel, QLayout, QProgressBar, QPushButton, QSizePolicy,
+    QVBoxLayout,
     QWidget,
 )
 
@@ -236,3 +239,93 @@ def kib(size: int) -> str:
 
 def colors():
     return theme.colors()
+
+
+STAGES = {
+    "READ": "Reading", "EPS READ": "Reading", "DEMO READ": "Reading",
+    "CONNECTING": "Connecting", "SECURITY": "Unlocking", "PROGRAMMING": "Entering programming",
+    "ERASING": "Erasing", "WRITING": "Writing", "VERIFYING": "Verifying checksum",
+    "REBOOTING": "Restarting the module", "COMPLETE": "Done",
+}
+BYTES = re.compile(r"(\d+)/(\d+) bytes")
+
+
+def rate(value: float) -> str:
+    return f"{value:.0f} B/s" if value < 1024 else f"{value / 1024:.1f} KiB/s"
+
+
+def clock(seconds: float) -> str:
+    seconds = int(max(0, seconds))
+    return f"{seconds // 60}:{seconds % 60:02d}"
+
+
+class ProgressPanel(QWidget):
+    """Overall bar plus "96 / 224 KiB · 0.6 KiB/s · 3:40 left · 1:52 elapsed".
+    Animates until the first real number arrives, so it never looks stuck."""
+
+    def __init__(self, parent=None):
+        super().__init__(parent)
+        layout = QVBoxLayout(self)
+        layout.setContentsMargins(0, 4, 0, 0)
+        layout.setSpacing(4)
+        top = QHBoxLayout()
+        self.stage = QLabel("")
+        self.stage.setStyleSheet("font-weight: 600;")
+        self.percent = QLabel("")
+        top.addWidget(self.stage)
+        top.addStretch(1)
+        top.addWidget(self.percent)
+        layout.addLayout(top)
+        self.bar = QProgressBar()
+        self.bar.setRange(0, 1000)
+        layout.addWidget(self.bar)
+        self.detail = muted("")
+        layout.addWidget(self.detail)
+        self.started = None
+        self.figures = ""
+        self.ticker = QTimer(self)
+        self.ticker.setInterval(1000)
+        self.ticker.timeout.connect(self._render_detail)
+        self.hide()
+
+    def start(self, stage="Starting…"):
+        self.started = self.started or time.monotonic()
+        self.stage.setText(stage)
+        self.percent.setText("")
+        self.figures = ""
+        self.bar.setRange(0, 0)  # busy animation until a percentage arrives
+        self.ticker.start()
+        self._render_detail()
+        self.show()
+
+    def update_from(self, message: dict):
+        if self.started is None:
+            self.start()
+        percent = float(message.get("percent") or 0)
+        stage = str(message.get("stage", "")).strip()
+        self.stage.setText(STAGES.get(stage, stage.title()))
+        self.percent.setText(f"{percent:.0f}%")
+        self.bar.setRange(0, 1000)
+        self.bar.setValue(int(percent * 10))
+        parts = []
+        match = BYTES.search(str(message.get("detail", "")))
+        if match:
+            done, total = int(match.group(1)), int(match.group(2))
+            parts.append(f"{done / 1024:.0f} / {total / 1024:.0f} KiB")
+        elif message.get("detail"):
+            parts.append(str(message["detail"]))
+        if message.get("speed"):
+            parts.append(rate(float(message["speed"])))
+        if message.get("eta_sec"):
+            parts.append(f"{clock(float(message['eta_sec']))} left")
+        self.figures = "  ·  ".join(parts)
+        self._render_detail()
+
+    def _render_detail(self):
+        elapsed = f"{clock(time.monotonic() - self.started)} elapsed" if self.started else ""
+        self.detail.setText("  ·  ".join(p for p in (self.figures, elapsed) if p))
+
+    def stop(self):
+        self.ticker.stop()
+        self.started = None
+        self.hide()

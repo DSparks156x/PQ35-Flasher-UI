@@ -105,6 +105,19 @@ class DemoModule:
             self.server.progress(stage, start + (end - start) * fraction, detail(fraction))
             self._sleep(seconds / steps)
 
+    def _transfer(self, stage, start, end, total, seconds, steps=60):
+        """Byte-level progress with speed and ETA, like the real readout/flash."""
+        began = time.monotonic()
+        for step in range(steps + 1):
+            done = total * step // steps
+            elapsed = max(time.monotonic() - began, 1e-3)
+            speed = done / elapsed if step else 0.0
+            eta = (total - done) / speed if speed else 0.0
+            self.server.progress(stage, start + (end - start) * step / steps,
+                                 f"{done}/{total} bytes", speed, eta)
+            if step < steps:
+                self._sleep(seconds / steps)
+
     def log(self, message):
         self.server.emit({"event": "log", "level": "info", "logger": "demo", "message": message})
 
@@ -135,9 +148,9 @@ class DemoModule:
         data = self.image(family)
         out = Path(params.get("out") or self.root / f"readout-{int(time.time())}")
         out.mkdir(parents=True, exist_ok=False)
-        total = len(data)
-        self._progress("DEMO READ", 0, 100, 4.0,
-                       lambda f: f"{int(total * f)}/{total} bytes")
+        # The real Haldex readout covers the application range only.
+        total = 0x38000 if family == HALDEX else len(data)
+        self._transfer("READ", 0, 100, total, 10.0)
         name = "pass1.bin" if family == HALDEX else "kwp_readout.bin"
         (out / name).write_bytes(data)
         status = {HALDEX: "captured_checksums_valid", EPS: "captured_complete"}.get(family, "captured_complete")
@@ -168,8 +181,7 @@ class DemoModule:
         self._progress("ERASING", 25, 35, 1.5, lambda f: "Erasing selected regions", steps=5)
         speed = 3400.0
         seconds = min(12.0, max(3.0, size / speed / 4))
-        self._progress("WRITING", 35, 90, seconds,
-                       lambda f: f"{int(size * f)}/{size} bytes", steps=40)
+        self._transfer("WRITING", 35, 90, size, seconds)
         self.server.progress("VERIFYING", 93, "Checking transferred image checksum")
         self._sleep(1.0)
         self.server.progress("REBOOTING", 96, "Committing; fresh application verification required")
