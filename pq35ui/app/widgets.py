@@ -172,7 +172,7 @@ class DropZone(QFrame):
     """Drag a .bin here or click to browse."""
     picked = Signal(str)
 
-    def __init__(self, prompt="Drop a .bin file here, or click to choose", parent=None):
+    def __init__(self, prompt="Drop a .bin or .sgo file here, or click to choose", parent=None):
         super().__init__(parent)
         self.setObjectName("drop")
         self.setAcceptDrops(True)
@@ -197,7 +197,7 @@ class DropZone(QFrame):
 
     def mouseReleaseEvent(self, event):
         path, _ = QFileDialog.getOpenFileName(self, "Choose firmware image", self.start_dir,
-                                              "Firmware images (*.bin);;All files (*)")
+                                              "Firmware (*.bin *.sgo);;All files (*)")
         if path:
             self.start_dir = str(Path(path).parent)
             self.picked.emit(path)

@@ -68,6 +68,16 @@ On Linux, a SocketCAN interface that is down, or not at 500 kbit/s, gets a **Bri
 button on the Connect page. It runs `ip link set … up type can bitrate 500000` through
 `pkexec`, so you're asked for your password.
 
+## SGO files (EPS)
+
+Pick or drop an EPS `.sgo` and it's converted to a 384 KiB `.bin` in
+`Documents/PQ35 Flasher/Images` first. Everything after that (checks, patches,
+flashing) uses the `.bin`, which goes through exactly the same rules as any other
+image. Only PQ35 racks (1K0/8J0 909 144) are accepted; SGOs for other controllers,
+such as 5N1 909 144 PQ46 racks, are refused. The converter follows
+[pq-flasher](https://github.com/I-CAN-hack/pq-flasher)'s `unpack_firmware_sgos.py`
+(MIT, Willem Melching) and reproduces its output byte for byte. Haldex: `.bin` only.
+
 ## How it works
 
 ```

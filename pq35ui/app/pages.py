@@ -14,7 +14,7 @@ from PySide6.QtWidgets import (
     QScrollArea, QSpinBox, QToolButton, QTreeWidget, QTreeWidgetItem, QVBoxLayout, QWidget,
 )
 
-from .storage import logs_dir, patched_dir, prune_logs, timestamp
+from .storage import images_dir, logs_dir, patched_dir, prune_logs, timestamp
 from .widgets import Badge, Banner, Card, DropZone, FlowRow, HoldButton, ProgressPanel, h1, kib, muted, restyle
 
 HALDEX, EPS = "haldex-gen4", "pq-eps"
@@ -52,6 +52,29 @@ class Page(QScrollArea):
 
     def error_text(self, error):
         return error.get("message", str(error)) if isinstance(error, dict) else str(error)
+
+
+def convert_sgo_then(page, path, family_name, banner, then):
+    """EPS SGOs become a 384 KiB .bin in Documents/PQ35 Flasher/Images first;
+    everything after that (checks, patches, flashing) works on the .bin."""
+    if not str(path).lower().endswith(".sgo"):
+        then(path)
+        return
+    if family_name != EPS:
+        banner.show_message("SGO files are supported for EPS racks only. Use a .bin image.", "error")
+        return
+    out = images_dir() / f"{Path(path).stem}.bin"
+    if out.exists():
+        out = images_dir() / f"{Path(path).stem}_{timestamp()}.bin"
+
+    def done(result):
+        banner.show_message(f"Converted the SGO ({result.get('source_name') or Path(path).name}, "
+                            f"{result['part']}) to {Path(result['out']).name} in your Images "
+                            "folder.", "info")
+        then(result["out"])
+
+    page.state.offline("convert_sgo", {"path": str(path), "out": str(out)}, done,
+                       lambda e: banner.show_message(page.error_text(e), "error"))
 
 
 def identity_rows(identity):
@@ -651,9 +674,17 @@ class FlashPage(Page):
         self.file_banner.hide()
         self._clear_options()
 
-    def load(self, path):
+    def load(self, path, converted=False):
         if self.state.busy:
             return
+        if str(path).lower().endswith(".sgo"):
+            self.file_banner.show_message("")
+            convert_sgo_then(self, path, self.family_name(), self.file_banner,
+                             lambda out: self.load(out, converted=True))
+            return
+        self.converted = converted
+        if not converted:
+            self.file_banner.show_message("")
         self.path = path
         self.loaded_for = (self.family_name(), self.state.part())
         self.inspection = self.plan = None
@@ -693,8 +724,8 @@ class FlashPage(Page):
                 return
         elif warnings:
             self.file_banner.show_message("\n".join(c["detail"] for c in warnings), "warning")
-        else:
-            self.file_banner.hide()
+        elif not getattr(self, "converted", False):
+            self.file_banner.show_message("")
         reference = None
         if self.state.record and self.family_name() in BACKUP_FAMILIES:
             reference = self.state.record.state()
@@ -917,6 +948,10 @@ class PatchesPage(Page):
                 item.widget().deleteLater()
 
     def load(self, path):
+        if str(path).lower().endswith(".sgo"):
+            family = self.state.family["name"] if self.state.family else None
+            convert_sgo_then(self, path, family, self.banner, self.load)
+            return
         self.path = path
         self.tree.clear()
         self._clear_actions()

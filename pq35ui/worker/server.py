@@ -217,6 +217,9 @@ class Server:
                                         params["end"], params["out"], params.get("reference"),
                                         params.get("correct_checksum", False),
                                         params.get("simulator_mode", False))
+        if method == "convert_sgo":
+            from . import sgo
+            return sgo.convert_eps(params["path"], params["out"])
         if method == "haldex_checksums":
             return self.haldex_checksums(params["path"])
         if method == "busy":
