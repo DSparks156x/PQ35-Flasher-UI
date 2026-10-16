@@ -221,6 +221,14 @@ class DemoModule:
         history["successes"] += 1
         history["date"] = time.strftime("%Y-%m-%d")
         self._save_history(family, history)
+        if os.environ.get("PQ35_DEMO_AMBIGUOUS"):
+            # Like a real bench Haldex: booted, but 0x82 StopCommunication unanswered.
+            return {"error": "RuntimeError: Application boot observed but commit outcome remains ambiguous",
+                    "result": dict(metadata, status="recovery_required", checksum_verified=True,
+                                   boot_verified=True, commit_outcome="ambiguous",
+                                   commit_responses={"20": "acknowledged", "82": "Timed out"},
+                                   recovery_required=True, application=self.identity(family),
+                                   demo=True)}
         self.server.progress("COMPLETE", 100, "Transfer/checksum, commit and fresh application boot verified")
         return {"result": dict(metadata, status="ok", checksum_verified=True, boot_verified=True,
                                commit_outcome="acknowledged", recovery_required=False,

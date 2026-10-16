@@ -245,6 +245,8 @@ class ConnectPage(Page):
         shown = []
         for name, card in self.cards.items():
             entry = self.scan_results.get(name)
+            if name == selected and self.state.identity:
+                entry = dict(entry or {}, status="ok", identity=self.state.identity)
             status = entry["status"] if entry else None
             if status == "absent" and name != selected:
                 status = "hidden"
@@ -570,6 +572,12 @@ class FlashPage(Page):
         self.flash_button.confirmed.connect(self.flash)
         self.progress = go.add(ProgressPanel())
         self.result_banner = go.add(Banner())
+        self.cycle_button = QPushButton("I've cycled the ignition: check again")
+        self.cycle_button.setObjectName("primary")
+        self.cycle_button.clicked.connect(self.check_after_cycle)
+        self.cycle_button.hide()
+        go.add(self.cycle_button)
+        self.expected_version = None
         self.finish()
         state.progress.connect(self.on_progress)
         state.open_in_flash.connect(self.load)
@@ -690,6 +698,7 @@ class FlashPage(Page):
         self.loaded_for = (self.family_name(), self.state.part())
         self.inspection = self.plan = None
         self.result_banner.hide()
+        self.cycle_button.hide()
         self.drop.set_file(Path(path).name, "Checking…")
         self.badges.clear()
         self._clear_options()
@@ -799,6 +808,7 @@ class FlashPage(Page):
                   "simulator_mode": self.simulator.isChecked(),
                   "recovery": self.recovery.isChecked()}
         self.result_banner.show_message("Flashing. Don't touch the car, the cable or this computer.", "warning")
+        self.cycle_button.hide()
         self.progress.start("Connecting")
         QTimer.singleShot(50, lambda: self.verticalScrollBar().setValue(self.verticalScrollBar().maximum()))
         self.flashed_plan = dict(self.plan, flashed=option["key"])
@@ -809,11 +819,8 @@ class FlashPage(Page):
             self.progress.update_from(message)
 
     def _flash_failed(self, error):
-        self.progress.stop()
-        self.result_banner.show_message(
-            "The flash didn't start or the worker stopped: " + self.error_text(error)
-            + "\n\nIf the module no longer identifies, it is waiting in its bootloader. "
-              "Flash again with Recovery mode and the same image.", "error")
+        # The worker couldn't run the flash at all; still look at the module.
+        self._reidentify("failed", "The flash didn't run: " + self.error_text(error))
 
     def _flashed(self, result, params, option):
         report = result.get("result") or {}
@@ -829,36 +836,24 @@ class FlashPage(Page):
                 pass
         if record:
             record.add(entry)
-        application = report.get("application") or {}
         if report.get("boot_verified") and report.get("commit_outcome") == "ambiguous":
             # Written, checksum-verified and seen running, but the ECU didn't
             # acknowledge every commit service (often it restarts before
             # answering StopCommunication). Not a bootloader case.
-            self.progress.stop()
             if record:
                 record.forget_state()
-            if application:
-                self.state.set_identity(application)
             unanswered = [f"0x{k.upper()}" for k, v in (report.get("commit_responses") or {}).items()
                           if v != "acknowledged"]
-            self.result_banner.show_message(
-                "Flashed, and the module is running the new firmware: "
-                f"{application.get('software_part_number', '')} {application.get('sw_version', '')} "
-                f"({application.get('system_desc', '')}).\n\n"
-                f"It didn't acknowledge the final commit step ({', '.join(unanswered) or 'commit'}), "
-                "so to be sure: cycle the ignition, then press Identify on the Connect page. "
-                "If it still shows the new version, you're done.", "warning")
+            self._reidentify("ambiguous", "Flashed and checksum-verified. The module didn't "
+                             f"acknowledge the last commit step ({', '.join(unanswered) or 'commit'}), "
+                             "which the ignition cycle below settles.")
             return
         if result.get("error") or report.get("status") != "ok":
-            self.progress.stop()
-            needs_recovery = report.get("recovery_required", True)
             if record:
                 record.forget_state()
-            self.result_banner.show_message(
-                "Flash failed: " + str(result.get("error") or report.get("error") or report.get("status"))
-                + ("\n\nThe module is probably waiting in its bootloader. That's recoverable: "
-                   "turn on Recovery under advanced options and flash the same image again."
-                   if needs_recovery else "\n\nNothing was erased."), "error")
+            self.failed_needs_recovery = report.get("recovery_required", True)
+            self._reidentify("failed", "Flash failed: " + str(
+                result.get("error") or report.get("error") or report.get("status")))
             return
         if record and self.family_name() in BACKUP_FAMILIES:
             reference = record.state()
@@ -868,8 +863,7 @@ class FlashPage(Page):
                 "end": option["end"], "reference": str(reference) if reference else None,
                 "out": str(record.state_path) + ".new"},
                 lambda r: self._state_written(r, record), lambda e: record.forget_state())
-        self.progress.start("Checking the module boots")
-        self.state.run("identify", {}, self._verified, self._not_verified)
+        self._reidentify("ok", "Flashed and verified.")
 
     def _state_written(self, result, record):
         new = Path(str(record.state_path) + ".new")
@@ -878,38 +872,114 @@ class FlashPage(Page):
         else:
             record.forget_state()
 
-    def _verified(self, result):
-        self.progress.stop()
+    # --- after a flash: identify, then confirm across an ignition cycle ---
+
+    def _reidentify(self, outcome, headline):
+        """The worker has released the adapter; ask the module what it is now.
+        This also updates the Connect page and the status pill."""
+        for box in self.checks:  # another flash needs a fresh confirmation
+            box.setChecked(False)
+        self.progress.start("Checking the module")
+        self.state.run("identify", {},
+                       lambda r: self._after_identify(outcome, headline, r),
+                       lambda e: self._after_identify(outcome, headline,
+                                                      {"error": self.error_text(e)}))
+
+    @staticmethod
+    def _identity_from(result):
         identity = result.get("result") or {}
-        if result.get("error") or result.get("exit_code"):
-            self._not_verified({"message": result.get("error")})
+        if result.get("error") or result.get("exit_code") or not identity:
+            return None
+        return identity
+
+    def _after_identify(self, outcome, headline, result):
+        self.progress.stop()
+        identity = self._identity_from(result)
+        self.state.set_identity(identity)
+        running = identity and not identity.get("in_bootloader")
+        if outcome in ("ok", "ambiguous") and running:
+            self.expected_version = identity.get("sw_version", "")
+            self.result_banner.show_message(
+                f"{headline} It's running {self.state.part()} {self.expected_version} "
+                f"({identity.get('system_desc', '')}).\n\n"
+                "Last step: turn the ignition off, wait about 10 seconds, turn it back on (or "
+                "start the engine), then press Check again.",
+                "ok" if outcome == "ok" else "warning")
+            self.cycle_button.show()
+            self._dataset_prompt()
+        elif outcome in ("ok", "ambiguous"):
+            self.expected_version = None
+            self.result_banner.show_message(
+                f"{headline} But the module didn't identify straight afterwards.\n\n"
+                "Turn the ignition off, wait about 10 seconds, turn it back on, then press "
+                "Check again.", "warning")
+            self.cycle_button.show()
+        elif running:
+            self.result_banner.show_message(
+                f"{headline}\n\nThe module still runs its application "
+                f"({self.state.part()} {identity.get('sw_version', '')}), so nothing was lost.",
+                "error")
+        else:
+            advice = ("\n\nThe module is probably waiting in its bootloader. That's recoverable: "
+                      "Find modules on the Connect page shows it with a Recover button, or turn "
+                      "on Recovery under advanced options and flash the same image again."
+                      if getattr(self, "failed_needs_recovery", True) else "\n\nNothing was erased.")
+            self.result_banner.show_message(headline + advice, "error")
+
+    def check_after_cycle(self):
+        self.cycle_button.setEnabled(False)
+        self.progress.start("Checking after the ignition cycle")
+        self.state.run("identify", {}, self._after_cycle,
+                       lambda e: self._after_cycle({"error": self.error_text(e)}))
+
+    def _after_cycle(self, result):
+        self.progress.stop()
+        self.cycle_button.setEnabled(True)
+        identity = self._identity_from(result)
+        if identity is None:
+            self.result_banner.show_message(
+                "The module didn't answer after the ignition cycle. Check the ignition is on, "
+                "then press Check again. If it still doesn't answer, Find modules on the Connect "
+                "page shows whether it's waiting in its bootloader.", "warning")
             return
         self.state.set_identity(identity)
-        self.result_banner.show_message(
-            f"Done. The module is running again: {self.state.part()} {identity.get('sw_version', '')}. "
-            "Clear any fault codes the flash left behind with your usual scan tool.", "ok")
-        plan = getattr(self, "flashed_plan", None) or {}
-        if plan.get("needs_dataset") and plan.get("flashed") == "full":
+        version = identity.get("sw_version", "")
+        if identity.get("in_bootloader"):
             self.result_banner.show_message(
-                self.result_banner.text() + "\n\nThis firmware came with the placeholder 000 "
-                "dataset. Flash a real steer dataset next.", "warning")
-            answer = QMessageBox.question(
-                self, "Flash a steer dataset",
-                "The firmware you flashed carries the factory placeholder dataset (000), so the "
-                "rack has no real steer dataset yet.\n\nChoose a dataset to flash now? Use a "
-                "4 KiB dataset file, or a full image (its 0x5E block will be used).")
-            if answer == QMessageBox.StandardButton.Yes:
-                path, _ = QFileDialog.getOpenFileName(self, "Choose steer dataset",
-                                                      self.drop.start_dir,
-                                                      "Firmware images (*.bin);;All files (*)")
-                if path:
-                    self.load(path)
+                "After the ignition cycle the module came up in its bootloader. Flash it again "
+                "with Recovery (Find modules → Recover).", "error")
+        elif self.expected_version and version != self.expected_version:
+            self.result_banner.show_message(
+                f"After the ignition cycle it reports {version}, not {self.expected_version}. "
+                "Check what's on it before driving.", "warning")
+        else:
+            self.cycle_button.hide()
+            if self.state.record:
+                self.state.record.add({"kind": "verify", "sw_version": version,
+                                       "identity": identity})
+            self.result_banner.show_message(
+                f"Confirmed after an ignition cycle: {self.state.part()} {version} "
+                f"({identity.get('system_desc', '')}). You're done. Clear any fault codes the "
+                "flash left behind with your usual scan tool.", "ok")
 
-    def _not_verified(self, error):
-        self.progress.stop()
+    def _dataset_prompt(self):
+        plan = getattr(self, "flashed_plan", None) or {}
+        if not (plan.get("needs_dataset") and plan.get("flashed") == "full"):
+            return
         self.result_banner.show_message(
-            "The flash finished, but a fresh identification failed: " + self.error_text(error)
-            + "\nCycle the ignition and press Identify on the Connect page.", "warning")
+            self.result_banner.text() + "\n\nThis firmware came with the placeholder 000 "
+            "dataset. Flash a real steer dataset next.", "warning")
+        answer = QMessageBox.question(
+            self, "Flash a steer dataset",
+            "The firmware you flashed carries the factory placeholder dataset (000), so the "
+            "rack has no real steer dataset yet.\n\nChoose a dataset to flash now? Use a "
+            "4 KiB dataset file or SGO, or a full image (its 0x5E block will be used).")
+        if answer == QMessageBox.StandardButton.Yes:
+            path, _ = QFileDialog.getOpenFileName(self, "Choose steer dataset",
+                                                  self.drop.start_dir,
+                                                  "Firmware (*.bin *.sgo);;All files (*)")
+            if path:
+                self.load(path)
 
 
 class PatchesPage(Page):
