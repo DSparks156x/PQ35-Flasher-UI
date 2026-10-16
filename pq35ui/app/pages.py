@@ -285,7 +285,8 @@ class ConnectPage(Page):
             self.scan_results = {e["family"]: e for e in entries}
             found = [e for e in entries if e["status"] == "ok"]
             stuck = [e for e in entries if e["status"] in ("bootloader", "responding")]
-            current = self.state.family["name"] if self.state.family else None
+            current = (self.state.family["name"] if self.state.family
+                       else self.state.settings.get("module"))
             pick = next((e for e in found if e["family"] == current), None)
             if pick is None and len(found) == 1:
                 pick = found[0]

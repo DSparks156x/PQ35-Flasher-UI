@@ -222,10 +222,10 @@ class MainWindow(QMainWindow):
         self._state_changed()
 
     def _families(self, families):
+        # Nothing is selected until a scan finds it or you pick by hand; the
+        # last-used module only breaks ties when a scan finds several.
         self.state.families = families
-        remembered = self.state.family_by_name(self.settings.get("module"))
-        if remembered:
-            self.state.select_module(remembered)
+        self.state.changed.emit()
 
     def _hello(self, info):
         self.state.hello = info
