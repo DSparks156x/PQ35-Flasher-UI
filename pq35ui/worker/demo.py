@@ -121,7 +121,35 @@ class DemoModule:
     def log(self, message):
         self.server.emit({"event": "log", "level": "info", "logger": "demo", "message": message})
 
+    def scan(self) -> list:
+        """PQ35_DEMO_BOOTLOADER=awd,eps pretends those modules are stuck in their loader."""
+        from flasher.controllers.registry import FAMILIES
+        stuck = {a.strip() for a in os.environ.get("PQ35_DEMO_BOOTLOADER", "").split(",") if a.strip()}
+        results = []
+        for index, family in enumerate(FAMILIES):
+            self.server.progress("SCAN", 100 * index / len(FAMILIES),
+                                 f"Looking for {family.name} at 0x{family.module:02X}")
+            self._sleep(0.5)
+            entry = {"family": family.name, "module": family.module, "status": "absent"}
+            if family.name == BCM:
+                results.append(entry)
+                continue
+            identity = self.identity(family.name)
+            if stuck & set(family.module_aliases):
+                identity = dict(identity, in_bootloader=True, sw_version="",
+                                system_desc="Bootloader (demo)")
+                entry.update(status="bootloader", identity=identity)
+            else:
+                identity["in_bootloader"] = False
+                entry.update(status="ok", identity=identity)
+            results.append(entry)
+        self.server.progress("SCAN", 100, "Done")
+        return results
+
     def run(self, params) -> dict:
+        if params["operation"] == "scan":
+            self.log("DEMO scan: no CAN traffic")
+            return {"operation": "scan", "exit_code": 0, "demo": True, "result": self.scan()}
         family = family_for_module(parse_module(params["module"])).name
         operation = params["operation"]
         started = time.monotonic()

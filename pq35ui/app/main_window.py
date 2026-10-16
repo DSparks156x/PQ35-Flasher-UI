@@ -1,13 +1,15 @@
-"""Top bar (interface + module), left navigation, page stack."""
+"""Top bar (interface menu + module chip), left navigation, page stack."""
 import ctypes
 import os
 import shutil
 import sys
 
-from PySide6.QtCore import QProcess, Qt
+from PySide6.QtCore import QProcess, Qt, QTimer
+from PySide6.QtGui import QAction, QActionGroup
 from PySide6.QtWidgets import (
-    QComboBox, QFrame, QHBoxLayout, QLabel, QListWidget, QListWidgetItem, QMainWindow,
-    QMessageBox, QProgressBar, QPushButton, QStackedWidget, QVBoxLayout, QWidget,
+    QFrame, QHBoxLayout, QLabel, QListWidget, QListWidgetItem, QMainWindow,
+    QMenu, QMessageBox, QProgressBar, QPushButton, QStackedWidget, QToolButton, QVBoxLayout,
+    QWidget,
 )
 
 from . import pages, updates
@@ -68,6 +70,7 @@ class MainWindow(QMainWindow):
         self.state = AppState(self.pool, self.settings, self)
         self.sleep = SleepBlocker()
         self.interfaces = []
+        self.listing = False
 
         root = QWidget()
         outer = QVBoxLayout(root)
@@ -129,11 +132,18 @@ class MainWindow(QMainWindow):
         self.state.progress.connect(lambda m: self.busy_bar.setValue(int(m.get("percent", 0))))
         self.state.open_in_flash.connect(lambda _path: self.nav.setCurrentRow(2))
         self.state.refresh_interfaces.connect(self.refresh_interfaces)
+        self.state.start_recovery.connect(lambda: self.nav.setCurrentRow(2))
 
         native = self.pool.native()
         native.call("hello", {}, self._hello, self._worker_broken)
         native.call("families", {}, self._families, self._worker_broken)
+        # Pick up adapters as they're plugged in or unplugged.
+        self.listing = False
         self.refresh_interfaces()
+        self.rescan = QTimer(self)
+        self.rescan.setInterval(4000)
+        self.rescan.timeout.connect(self._auto_refresh)
+        self.rescan.start()
 
     # --- top bar ---
 
@@ -148,47 +158,60 @@ class MainWindow(QMainWindow):
         layout.addWidget(title)
         if os.environ.get("PQ35_DEMO"):
             layout.addWidget(Badge("DEMO: no hardware", "info"))
-        layout.addSpacing(12)
-        layout.addWidget(muted("Interface"))
-        self.interface_box = QComboBox()
-        self.interface_box.setMinimumWidth(260)
-        self.interface_box.currentIndexChanged.connect(self._interface_picked)
-        layout.addWidget(self.interface_box)
-        self.refresh_button = QPushButton("Refresh")
-        self.refresh_button.setToolTip("Look for interfaces again")
-        self.refresh_button.clicked.connect(self.refresh_interfaces)
-        layout.addWidget(self.refresh_button)
-        layout.addSpacing(8)
-        layout.addWidget(muted("Module"))
-        self.module_box = QComboBox()
-        self.module_box.setMinimumWidth(200)
-        self.module_box.currentIndexChanged.connect(self._module_picked)
-        layout.addWidget(self.module_box)
         layout.addStretch(1)
+        # Interface: rarely changed, so it lives in a menu.
+        self.interface_button = QToolButton()
+        self.interface_button.setPopupMode(QToolButton.ToolButtonPopupMode.InstantPopup)
+        self.interface_button.setToolTip("CAN interface")
+        self.interface_menu = QMenu(self)
+        self.interface_button.setMenu(self.interface_menu)
+        self.interface_group = QActionGroup(self)
+        layout.addWidget(self.interface_button)
+        # Module: shows what's selected; click to change it on the Connect page.
+        self.module_button = QPushButton("Choose module")
+        self.module_button.setToolTip("Change module")
+        self.module_button.clicked.connect(lambda: self.nav.setCurrentRow(0))
+        layout.addWidget(self.module_button)
         self.status = Badge("Not connected", "idle")
         layout.addWidget(self.status)
         return bar
 
     def refresh_interfaces(self):
-        self.refresh_button.setEnabled(False)
-        self.pool.native().call("list_interfaces", {}, self._interfaces, self._worker_broken)
+        if self.listing:
+            return
+        self.listing = True
+        self.pool.native().call("list_interfaces", {}, self._interfaces, self._listing_failed)
+
+    def _auto_refresh(self):
+        if not self.state.busy and self.isActiveWindow():
+            self.refresh_interfaces()
+
+    def _listing_failed(self, error):
+        self.listing = False
+        self._worker_broken(error)
 
     def _interfaces(self, interfaces):
-        self.refresh_button.setEnabled(True)
+        self.listing = False
+        if interfaces == self.interfaces and self.interface_menu.actions():
+            return
         self.interfaces = interfaces
-        remembered = self.settings.get("interface")
-        self.interface_box.blockSignals(True)
-        self.interface_box.clear()
-        selected = 0
+        current = self.state.adapter or self.settings.get("interface")
+        selected = next((i for i, a in enumerate(interfaces) if self.state.same_adapter(a, current)),
+                        0 if interfaces else -1)
+        self.interface_menu.clear()
+        for action in self.interface_group.actions():
+            self.interface_group.removeAction(action)
         for index, interface in enumerate(interfaces):
-            self.interface_box.addItem(interface["label"])
-            if remembered and all(interface.get(k) == remembered.get(k)
-                                  for k in ("adapter", "dll", "channel", "serial")):
-                selected = index
+            action = QAction(interface["label"], self, checkable=True)
+            action.setChecked(index == selected)
+            action.triggered.connect(lambda _=False, i=index: self._interface_picked(i))
+            self.interface_group.addAction(action)
+            self.interface_menu.addAction(action)
         if not interfaces:
-            self.interface_box.addItem("No interface found")
-        self.interface_box.setCurrentIndex(selected)
-        self.interface_box.blockSignals(False)
+            none = self.interface_menu.addAction("No interface found")
+            none.setEnabled(False)
+        self.interface_menu.addSeparator()
+        self.interface_menu.addAction("Look for interfaces again", self.refresh_interfaces)
         self._interface_picked(selected)
 
     def _interface_picked(self, index):
@@ -196,28 +219,14 @@ class MainWindow(QMainWindow):
         if adapter:
             self.settings.set("interface", adapter)
         self.state.set_adapter(adapter)
+        self.interface_button.setText((adapter["label"] if adapter else "No interface") + "  ▾")
         self._state_changed()
 
     def _families(self, families):
         self.state.families = families
-        remembered = self.settings.get("module")
-        self.module_box.blockSignals(True)
-        self.module_box.clear()
-        self.module_box.addItem("Choose a module…")
-        selected = 0
-        for index, family in enumerate(families, start=1):
-            self.module_box.addItem(f"{family['label']}  ·  0x{family['module']:02X}")
-            if family["name"] == remembered:
-                selected = index
-        self.module_box.setCurrentIndex(selected)
-        self.module_box.blockSignals(False)
-        self._module_picked(selected)
-
-    def _module_picked(self, index):
-        family = self.state.families[index - 1] if index > 0 else None
-        if family:
-            self.settings.set("module", family["name"])
-        self.state.set_family(family)
+        remembered = self.state.family_by_name(self.settings.get("module"))
+        if remembered:
+            self.state.select_module(remembered)
 
     def _hello(self, info):
         self.state.hello = info
@@ -226,7 +235,9 @@ class MainWindow(QMainWindow):
         self.state.changed.emit()
 
     def _worker_broken(self, error):
-        self.refresh_button.setEnabled(True)
+        if getattr(self, "worker_error_shown", False):
+            return
+        self.worker_error_shown = True
         QMessageBox.critical(self, "PQ35 Flasher",
                              "The background worker couldn't start:\n\n" + error.get("message", "")
                              + "\n\nTry re-running the installer.")
@@ -235,6 +246,7 @@ class MainWindow(QMainWindow):
 
     def _state_changed(self):
         state = self.state
+        self.module_button.setText((state.family["label"] if state.family else "Choose module") + "  ▾")
         if state.identity:
             self.status.set(f"{state.part()} · {state.identity.get('sw_version', '')}", "ok")
         elif state.adapter and state.family:
@@ -323,7 +335,7 @@ class MainWindow(QMainWindow):
 
     def _busy_changed(self, busy):
         self.update_button.setEnabled(not busy)
-        for widget in (self.interface_box, self.module_box, self.refresh_button):
+        for widget in (self.interface_button, self.module_button):
             widget.setEnabled(not busy)
         self.nav.setEnabled(not busy)
         self.busy_bar.setVisible(busy)

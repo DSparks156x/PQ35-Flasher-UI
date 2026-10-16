@@ -11,6 +11,7 @@ class AppState(QObject):
     busy_changed = Signal(bool)
     open_in_flash = Signal(str)
     refresh_interfaces = Signal()
+    start_recovery = Signal()
 
     def __init__(self, pool, settings, parent=None):
         super().__init__(parent)
@@ -29,7 +30,17 @@ class AppState(QObject):
         if message.get("event") == "progress":
             self.progress.emit(message)
 
+    @staticmethod
+    def same_adapter(a, b) -> bool:
+        keys = ("adapter", "dll", "channel", "serial")
+        return bool(a and b) and all(a.get(k) == b.get(k) for k in keys)
+
     def set_adapter(self, adapter):
+        if self.same_adapter(adapter, self.adapter):
+            # Same device, fresher details (e.g. a SocketCAN link came up).
+            self.adapter = adapter
+            self.changed.emit()
+            return
         if adapter != self.adapter:
             self.adapter = adapter
             self.identity = None
@@ -42,6 +53,21 @@ class AppState(QObject):
             self.identity = None
             self.record = None
             self.changed.emit()
+
+    def select_module(self, family, identity=None):
+        """Pick the module to work on (from the Connect page), optionally with
+        the identification a scan already read from it."""
+        self.settings.set("module", family["name"] if family else None)
+        self.family = family
+        self.identity = None
+        self.record = None
+        if identity:
+            self.set_identity(identity)  # emits changed
+        else:
+            self.changed.emit()
+
+    def family_by_name(self, name):
+        return next((f for f in self.families if f["name"] == name), None)
 
     def set_identity(self, identity):
         self.identity = identity
@@ -59,7 +85,7 @@ class AppState(QObject):
             if on_error:
                 on_error({"message": "Another operation is still running."})
             return False
-        if not self.adapter or not self.family:
+        if not self.adapter or (not self.family and operation != "scan"):
             if on_error:
                 on_error({"message": "Choose an interface and a module first."})
             return False
@@ -70,8 +96,9 @@ class AppState(QObject):
                 on_error({"message": str(exc)})
             return False
         adapter = {k: v for k, v in self.adapter.items() if k in ("adapter", "dll", "channel", "serial", "bus")}
-        request = dict(params or {}, operation=operation, adapter=adapter,
-                       module=self.family["alias"])
+        request = dict(params or {}, operation=operation, adapter=adapter)
+        if self.family:
+            request["module"] = self.family["alias"]
         self._set_busy(True)
 
         def done(result):

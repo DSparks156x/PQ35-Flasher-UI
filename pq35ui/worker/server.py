@@ -288,12 +288,20 @@ class Server:
     def run_hardware(self, params):
         import flasher.runner as runner
         operation = params["operation"]
-        if operation not in HARDWARE_OPERATIONS:
+        if operation not in HARDWARE_OPERATIONS and operation != "scan":
             raise WorkerError(f"Unknown operation {operation!r}")
         adapter = params["adapter"]
         if adapter["adapter"] == "demo":
             from .demo import DemoModule
             return DemoModule(self, self.data_dir).run(params)
+        if operation == "scan":
+            from .scan import scan
+            self.lock.acquire()
+            try:
+                return {"operation": "scan", "exit_code": 0,
+                        "result": scan(adapter, self.progress, runner.open_adapter)}
+            finally:
+                self.lock.release()
         argv = ["--module", params["module"], "--adapter", adapter["adapter"]]
         for key in ("dll", "channel", "serial", "bus", "baud"):
             if adapter.get(key) not in (None, ""):

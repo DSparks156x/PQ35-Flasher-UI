@@ -53,6 +53,7 @@ QMainWindow, #page {{ background: {bg}; }}
 #h1 {{ font-size: 15pt; font-weight: 600; }}
 #muted, QLabel[muted="true"] {{ color: {muted}; }}
 #card {{ background: {surface}; border: 1px solid {border}; border-radius: 10px; }}
+#card[selected="true"] {{ border: 2px solid {accent}; }}
 #drop {{ background: {surface}; border: 2px dashed {border}; border-radius: 10px; }}
 #drop[hover="true"] {{ border-color: {accent}; background: {accent_bg}; }}
 QComboBox, QLineEdit, QSpinBox {{ background: {surface}; border: 1px solid {border};
@@ -60,6 +61,10 @@ QComboBox, QLineEdit, QSpinBox {{ background: {surface}; border: 1px solid {bord
 QPushButton {{ background: {surface}; border: 1px solid {border}; border-radius: 6px;
     padding: 6px 14px; }}
 QPushButton:hover {{ background: {surface2}; }}
+QToolButton {{ background: {surface}; border: 1px solid {border}; border-radius: 6px;
+    padding: 6px 12px; }}
+QToolButton:hover {{ background: {surface2}; }}
+QToolButton::menu-indicator {{ image: none; width: 0; }}
 QPushButton:disabled {{ color: {muted}; }}
 QPushButton#primary {{ background: {accent}; color: white; border: none; font-weight: 600; }}
 QPushButton#primary:disabled {{ background: {surface2}; color: {muted}; }}

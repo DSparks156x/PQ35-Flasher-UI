@@ -15,7 +15,7 @@ from PySide6.QtWidgets import (
 )
 
 from .storage import data_dir, timestamp
-from .widgets import Banner, Card, DropZone, FlowRow, HoldButton, ProgressPanel, h1, kib, muted
+from .widgets import Badge, Banner, Card, DropZone, FlowRow, HoldButton, ProgressPanel, h1, kib, muted, restyle
 
 HALDEX, EPS = "haldex-gen4", "pq-eps"
 # Modules whose firmware can be read back over OBD. EPS racks can't, so there
@@ -63,29 +63,120 @@ def identity_rows(identity):
     return [(k, str(v)) for k, v in rows if v not in (None, "")]
 
 
+SCAN_TEXT = {
+    "ok": ("Found", "ok"),
+    "bootloader": ("In its bootloader", "warning"),
+    "responding": ("Answers, but won't identify", "warning"),
+    "unexpected": ("Answers as a different module", "error"),
+    "absent": ("Not found", "idle"),
+    None: ("Not checked yet", "idle"),
+}
+
+
+class ModuleCard(Card):
+    """One known module: what a scan found at its address, and how to use it."""
+
+    def __init__(self, family, page):
+        super().__init__()
+        self.family = family
+        self.page = page
+        self.entry = None
+        head = QHBoxLayout()
+        title = QLabel(family["label"])
+        title.setStyleSheet("font-weight: 600;")
+        head.addWidget(title)
+        head.addWidget(muted(f"0x{family['module']:02X}"))
+        head.addStretch(1)
+        self.badge = Badge("Not checked yet", "idle")
+        head.addWidget(self.badge)
+        self.add(head)
+        self.detail = self.add(muted(""))
+        row = QHBoxLayout()
+        self.use = QPushButton("Use this module")
+        self.use.clicked.connect(lambda: page.choose(self.family, self.entry))
+        self.recover = QPushButton("Recover…")
+        self.recover.setObjectName("danger")
+        self.recover.clicked.connect(lambda: page.recover(self.family))
+        row.addWidget(self.use)
+        row.addWidget(self.recover)
+        row.addStretch(1)
+        self.add(row)
+        self.show_entry(None, selected=False)
+
+    def show_entry(self, entry, selected):
+        self.entry = entry
+        status = entry["status"] if entry else None
+        text, level = SCAN_TEXT.get(status, SCAN_TEXT[None])
+        self.badge.set("Selected" if selected and status in (None, "ok") else text,
+                       "info" if selected and status in (None, "ok") else level)
+        identity = (entry or {}).get("identity") or {}
+        part = identity.get("software_part_number") or identity.get("part_number") or ""
+        if status == "ok":
+            detail = f"{part} {identity.get('sw_version', '')}  ·  {identity.get('system_desc', '')}"
+        elif status == "bootloader":
+            detail = ("Something is waiting in its loader at this address"
+                      + (f" ({identity.get('system_desc')})" if identity.get("system_desc") else "")
+                      + ". It needs a recovery flash.")
+        elif status == "responding":
+            detail = ("A controller opened a channel at this address but didn't identify. "
+                      "Usually that's a loader waiting for a flash.")
+        elif status == "unexpected":
+            detail = (f"Identifies as {part} {identity.get('sw_version', '')} "
+                      f"({identity.get('system_desc', '')}), not a {self.family['label']}.")
+        elif status == "absent":
+            detail = "Nothing answered at this address."
+        else:
+            detail = "Press Find modules, or pick this one by hand."
+        self.detail.setText(detail)
+        self.use.setText("Selected" if selected else "Use this module")
+        self.use.setEnabled(not selected and status != "unexpected")
+        self.use.setObjectName("primary" if status == "ok" and not selected else "")
+        restyle(self.use)
+        stuck = status in ("bootloader", "responding")
+        self.recover.setVisible(stuck and self.family.get("can_flash", False))
+        self.setProperty("selected", "true" if selected else "false")
+        restyle(self)
+
+
 class ConnectPage(Page):
     title = "Connect"
 
     def __init__(self, state, parent=None):
         super().__init__(state, parent)
-        self.adapter_card = self.add(Card("Interface"))
-        self.adapter_text = self.adapter_card.add(muted(""))
-        self.adapter_help = self.adapter_card.add(Banner())
+        self.scan_results = {}
+        self.cards = {}
+
+        find = self.add(Card("Find your module"))
+        find.add(muted("Ignition on, engine off. This asks every supported module address "
+                       "what's there. It only reads; nothing is written."))
+        row = QHBoxLayout()
+        self.scan_button = QPushButton("Find modules")
+        self.scan_button.setObjectName("primary")
+        self.scan_button.clicked.connect(self.scan)
+        row.addWidget(self.scan_button)
+        self.adapter_text = muted("")
+        row.addWidget(self.adapter_text, 1)
+        find.add(row)
+        self.adapter_help = find.add(Banner())
         self.bring_up = QPushButton("")
         self.bring_up.clicked.connect(self.bring_up_socketcan)
         self.bring_up.hide()
         row = QHBoxLayout()
         row.addWidget(self.bring_up)
         row.addStretch(1)
-        self.adapter_card.add(row)
+        find.add(row)
         self.bring_up_process = None
+        self.scan_banner = find.add(Banner())
 
-        card = self.add(Card("Identify the module"))
-        card.add(muted("Turn the ignition on (engine off), then identify the module. "
-                       "This only reads. Nothing is written."))
+        self.cards_box = QVBoxLayout()
+        self.cards_box.setSpacing(10)
+        holder = QWidget()
+        holder.setLayout(self.cards_box)
+        self.add(holder)
+
+        card = self.add(Card("Selected module"))
         row = QHBoxLayout()
-        self.identify_button = QPushButton("Identify module")
-        self.identify_button.setObjectName("primary")
+        self.identify_button = QPushButton("Identify again")
         self.identify_button.clicked.connect(self.identify)
         row.addWidget(self.identify_button)
         row.addStretch(1)
@@ -97,20 +188,91 @@ class ConnectPage(Page):
         self.next_hint = self.add(Banner())
         self.finish()
 
+    # --- module cards ---
+
+    def _build_cards(self):
+        if self.cards or not self.state.families:
+            return
+        for family in self.state.families:
+            card = ModuleCard(family, self)
+            self.cards[family["name"]] = card
+            self.cards_box.addWidget(card)
+
+    def _refresh_cards(self):
+        self._build_cards()
+        selected = self.state.family["name"] if self.state.family else None
+        for name, card in self.cards.items():
+            card.show_entry(self.scan_results.get(name), selected=name == selected)
+
+    def choose(self, family, entry):
+        identity = (entry or {}).get("identity") if (entry or {}).get("status") == "ok" else None
+        self.state.select_module(family, identity)
+        if identity:
+            self.banner.show_message(f"Using {family['label']}: {self.state.part()} "
+                                     f"{identity.get('sw_version', '')}", "ok")
+        else:
+            self.banner.show_message("Selected. Press Identify to check it's there.", "info")
+
+    def recover(self, family):
+        self.state.select_module(family)
+        self.state.start_recovery.emit()
+
+    def scan(self):
+        self.scan_banner.show_message("Looking for modules…", "info")
+
+        def done(result):
+            entries = result.get("result") or []
+            if result.get("error"):
+                self.scan_banner.show_message("The scan stopped: " + str(result["error"]), "error")
+                return
+            self.scan_results = {e["family"]: e for e in entries}
+            found = [e for e in entries if e["status"] == "ok"]
+            stuck = [e for e in entries if e["status"] in ("bootloader", "responding")]
+            odd = [e for e in entries if e["status"] == "unexpected"]
+            current = self.state.family["name"] if self.state.family else None
+            pick = next((e for e in found if e["family"] == current), None)
+            if pick is None and len(found) == 1:
+                pick = found[0]
+            if pick:
+                self.choose(self.state.family_by_name(pick["family"]), pick)
+            if not entries or all(e["status"] == "absent" for e in entries):
+                self.scan_banner.show_message(
+                    "Nothing answered. Check the ignition is on and the adapter is plugged into "
+                    "the car (or the bench harness is powered).", "warning")
+            elif stuck:
+                self.scan_banner.show_message(
+                    "A module is waiting in its loader. Use Recover on its card to flash it back.",
+                    "warning")
+            elif len(found) > 1 and not pick:
+                self.scan_banner.show_message("Found several modules. Choose one below.", "info")
+            elif odd:
+                self.scan_banner.show_message(
+                    "Something at a module address identified as a different part. See the card "
+                    "below.", "warning")
+            else:
+                self.scan_banner.hide()
+            self._refresh_cards()
+
+        def failed(error):
+            self.scan_banner.show_message(self.error_text(error), "error")
+
+        self.state.run("scan", {}, done, failed)
+
     def refresh(self):
-        adapter, family = self.state.adapter, self.state.family
+        adapter = self.state.adapter
         backends = self.state.hello.get("backends", {})
+        self._refresh_cards()
+        self.bring_up.hide()
         if not adapter:
             self.adapter_text.setText("No CAN interface found.")
             self.adapter_help.show_message(
-                "Plug in your adapter, then press the refresh button next to the interface list.\n"
+                "Plug in your adapter; it shows up on its own within a few seconds.\n"
                 "• J2534 (Windows): install the adapter's own driver.\n"
                 "• CANable / candleLight (gs_usb): no driver needed on Windows 10/11. "
                 "If it isn't listed, use Zadig to bind WinUSB to it once.\n"
-                "• Linux SocketCAN: sudo ip link set can0 up type can bitrate 500000", "info")
-        self.bring_up.hide()
-        if adapter:
-            self.adapter_text.setText(adapter.get("label", ""))
+                "• Linux SocketCAN: plug it in and it shows up as can0.", "info")
+        else:
+            self.adapter_text.setText(f"Using {adapter.get('label', '')}. Change it at the top right.")
             problem = adapter.get("problem")
             if adapter["adapter"] == "gs_usb" and not backends.get("gs_usb"):
                 problem = "gs_usb support isn't installed. Re-run the installer."
@@ -127,7 +289,11 @@ class ConnectPage(Page):
             elif adapter["adapter"] == "j2534" and not adapter.get("present", True):
                 problem = f"The registered driver DLL is missing: {adapter.get('dll')}"
             self.adapter_help.show_message(problem or "", "warning")
-        self.identify_button.setEnabled(bool(adapter and family) and not self.state.busy)
+        idle = not self.state.busy
+        self.scan_button.setEnabled(bool(adapter) and idle)
+        self.identify_button.setEnabled(bool(adapter and self.state.family) and idle)
+        for card in self.cards.values():
+            card.setEnabled(idle)
         self._show_identity()
 
     def bring_up_socketcan(self):
@@ -188,8 +354,8 @@ class ConnectPage(Page):
             if result.get("error") or result.get("exit_code"):
                 self.state.set_identity(None)
                 self.banner.show_message(
-                    "The module didn't answer. Check the ignition is on, the adapter is plugged "
-                    "in, and the right module is selected.\n\n" + str(result.get("error") or ""),
+                    "The module didn't answer. Check the ignition is on and the adapter is "
+                    "plugged in, or press Find modules.\n\n" + str(result.get("error") or ""),
                     "error")
                 return
             identity = result.get("result") or {}
@@ -201,7 +367,7 @@ class ConnectPage(Page):
             message = self.error_text(error)
             if "not " in message and "identified as" in message:
                 message = ("That module isn't a " + self.state.family["label"] + ". "
-                           "Pick the right module from the list.\n\n" + message)
+                           "Press Find modules to see what's there.\n\n" + message)
             self.banner.show_message(message, "error")
 
         self.state.run("identify", {}, done, failed)
@@ -362,8 +528,22 @@ class FlashPage(Page):
         self.finish()
         state.progress.connect(self.on_progress)
         state.open_in_flash.connect(self.load)
+        state.start_recovery.connect(self.begin_recovery)
 
     # --- state ---
+
+    def begin_recovery(self):
+        """From a Recover button on the Connect page: preset recovery mode."""
+        self._reset_file()
+        self.advanced_toggle.setChecked(True)
+        self.recovery.blockSignals(True)
+        self.recovery.setChecked(True)
+        self.recovery.blockSignals(False)
+        self.result_banner.show_message(
+            f"Recovery for the {self.state.family['label']}: choose the exact image made for this "
+            "module. Recovery skips the checks that it's the module you think it is, so the "
+            "wrong image bricks it.", "warning")
+        self.refresh()
 
     def _toggle_advanced(self, on):
         self.advanced.setVisible(on)
