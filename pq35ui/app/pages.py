@@ -591,6 +591,26 @@ class FlashPage(Page):
                  "error": result.get("error")}
         if record:
             record.add(entry)
+        application = report.get("application") or {}
+        if report.get("boot_verified") and report.get("commit_outcome") == "ambiguous":
+            # Written, checksum-verified and seen running, but the ECU didn't
+            # acknowledge every commit service (often it restarts before
+            # answering StopCommunication). Not a bootloader case.
+            self.progress.stop()
+            if record:
+                record.forget_state()
+            if application:
+                self.state.set_identity(application)
+            unanswered = [f"0x{k.upper()}" for k, v in (report.get("commit_responses") or {}).items()
+                          if v != "acknowledged"]
+            self.result_banner.show_message(
+                "Flashed, and the module is running the new firmware: "
+                f"{application.get('software_part_number', '')} {application.get('sw_version', '')} "
+                f"({application.get('system_desc', '')}).\n\n"
+                f"It didn't acknowledge the final commit step ({', '.join(unanswered) or 'commit'}), "
+                "so to be sure: cycle the ignition, then press Identify on the Connect page. "
+                "If it still shows the new version, you're done.", "warning")
+            return
         if result.get("error") or report.get("status") != "ok":
             self.progress.stop()
             needs_recovery = report.get("recovery_required", True)
