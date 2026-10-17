@@ -11,6 +11,10 @@
 # it waits for the app to close, updates without asking anything, and reopens it.
 
 $ErrorActionPreference = "Stop"
+# uv and git print normal progress on stderr. Never redirect a native command's
+# stderr here: Windows PowerShell 5.1 turns each line into a terminating error.
+# PowerShell 7.3+ can opt into that too; keep it off and check exit codes instead.
+$PSNativeCommandUseErrorActionPreference = $false
 $Repo = "DSparks156x/PQ35-Flasher-UI"
 $InstallDir = Join-Path $env:LOCALAPPDATA "PQ35-Flasher-UI"
 
@@ -105,14 +109,18 @@ $uv = $uv.Source
 
 # 3. App environment (64-bit Python + PySide6 + CAN backends).
 Step "Installing the app (this takes a minute the first time)"
-& $uv sync --project $AppDir --frozen 2>$null
-if ($LASTEXITCODE -ne 0) { & $uv sync --project $AppDir }
+& $uv sync --project $AppDir --frozen
+if ($LASTEXITCODE -ne 0) {
+    Write-Host "Retrying without the lockfile pin..."
+    & $uv sync --project $AppDir
+}
 if ($LASTEXITCODE -ne 0) { throw "uv sync failed" }
 
 # 4. 32-bit Python for J2534 adapters (stdlib only, nothing to install into it).
 Step "Installing 32-bit Python for J2534 adapters"
 & $uv python install --no-bin cpython-3.12-windows-x86-none
-$py32 = (& $uv python find cpython-3.12-windows-x86-none).Trim()
+$py32 = & $uv python find cpython-3.12-windows-x86-none
+if ($py32) { $py32 = "$py32".Trim() }
 if ($py32 -and (Test-Path $py32)) {
     Set-Content -Path (Join-Path $AppDir ".python32") -Value $py32 -Encoding UTF8 -NoNewline
 } else {
