@@ -262,41 +262,39 @@ def _plan_bcm(data, reference) -> dict:
                 "valid": True, "sectors": list(changed),
                 "metadata": {"sectors": ["0x%06X" % s for s in changed]}})
 
-    # "Present sectors only" and "all 31" both ERASE the unsupplied
-    # 0x7A0000..0x7BFFFF gap (the full-span image pads it with 0xFF). Since the
-    # BCM can't be read back, erasing a sector we have no real content for can
-    # destroy data. So writing by whole image is offered but never recommended,
-    # and only the sectors with real (non-blank) data are included.
+    # We never flash padding. The boot block is refused outright; blank (all-0xFF)
+    # sectors are never written (that would just erase the module). Normal use
+    # writes only the pages the patch changed. "Every data sector" exists only to
+    # restore a blank/bricked module from a known-good full image, and is never
+    # recommended because it rewrites unchanged pages too.
     present = _bcm_sectors_present(bcm, data)
-    all_sectors = list(bcm.pflash_sector_starts())
-    blank = [s for s in all_sectors if s not in present]
-    gap_hint = ""
-    if blank:
-        gap_hint = (f" Skips {len(blank)} blank sector(s) so the unsupplied 0x7A0000-0x7BFFFF "
-                    "gap is not erased.")
-    options.append({
-        "key": "present", "label": f"All sectors with data ({len(present)})",
+    recovery = {
+        "key": "recovery", "label": f"Full recovery — every data sector ({len(present)})",
         "start": present[0] if present else bcm.PFLASH_REGION[0],
         "end": (present[-1] + bcm.PFLASH_SECTOR - 1) if present else bcm.PFLASH_REGION[1],
         "size": len(present) * bcm.PFLASH_SECTOR,
-        "hint": "Every application sector that carries data in this image." + gap_hint,
-        "valid": bool(present), "sectors": present,
-        "metadata": {"sectors": [f"0x{s:06X}" for s in present]}})
+        "hint": "Only for restoring a blank/bricked module from a known-good full image. "
+                "Rewrites unchanged pages too; blank padding and the boot block are still skipped.",
+        "valid": bool(present), "sectors": present, "recovery_only": True,
+        "metadata": {"sectors": [f"0x{s:06X}" for s in present]}}
 
     if any(o["key"] == "changed" for o in options):
-        recommended, reason = "changed", f"{len(changes)} sector(s) differ from the reference."
+        recommended, reason = "changed", (
+            f"Writes only the {len(changes)} page(s) that differ from the stock reference.")
+        options.append(recovery)
     elif changes == []:
         recommended, reason = None, "This image is identical to the reference; flashing changes nothing."
-        for option in options:
-            option.update(valid=False, reason="No sectors differ from the reference.")
+        recovery.update(valid=False, reason="No sectors differ from the reference.")
+        options.append(recovery)
     else:
-        # No reference: do not auto-recommend a whole-image write.
+        # No reference: never auto-pick a whole-image write. Patched pages only.
         recommended = None
-        reason = ("Load the stock full-span image the BCM currently runs as the reference to "
-                  "write only the sectors your patch changed. Without it, you can write every "
-                  "sector that has data, but check nothing else on the module relied on them.")
-        notes.append("The BCM can't be read back, so there is no on-module diff. 'Changed "
-                     "sectors only' needs the stock image you started from as the reference.")
+        reason = ("Choose the stock full-span image the BCM currently runs as the reference, and "
+                  "only the pages your patch changed are written. No reference? Pick the patched "
+                  "pages yourself with the command line (--bcm-sector). Padding is never flashed.")
+        options.append(recovery)
+        notes.append("The BCM can't be read back, so there's no on-module diff. Normal flashing "
+                     "writes only changed pages; 'Full recovery' is just for a blank module.")
     return {"family": BCM, "options": options, "reference": reference_path,
             "changes": changes, "recommended": recommended, "reason": reason,
             "notes": notes, "needs_dataset": False}
