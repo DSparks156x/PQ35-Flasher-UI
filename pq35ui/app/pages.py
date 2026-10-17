@@ -598,6 +598,21 @@ class FlashPage(Page):
         self.badges = file_card.add(FlowRow())
         self.file_banner = file_card.add(Banner())
 
+        # BCM only: the stock full-span image the module currently runs. The plan
+        # diffs against it and writes just the 16 KiB sectors that differ.
+        self.bcm_reference = None
+        self.reference_card = self.add(Card("Stock reference image"))
+        ref_row = QHBoxLayout()
+        self.reference_button = QPushButton("Choose stock reference…")
+        self.reference_button.clicked.connect(self._choose_reference)
+        ref_row.addWidget(self.reference_button)
+        self.reference_label = muted("No stock reference chosen")
+        ref_row.addWidget(self.reference_label, 1)
+        self.reference_card.add(ref_row)
+        self.reference_card.add(muted(
+            "The BCM writes only the 16 KiB sectors that differ from this stock image. "
+            "Point it at the full-span .bin the BCM currently runs."))
+
         self.range_card = self.add(Card("2. What to write"))
         self.reason = self.range_card.add(muted(""))
         self.plan_notes = self.range_card.add(Banner())
@@ -694,12 +709,24 @@ class FlashPage(Page):
     def family_name(self):
         return self.state.family["name"] if self.state.family else None
 
+    def _choose_reference(self):
+        path, _ = QFileDialog.getOpenFileName(
+            self, "Choose stock reference image", "", "Firmware images (*.bin)")
+        if not path:
+            return
+        self.bcm_reference = path
+        self.reference_label.setText(Path(path).name)
+        if self.path:
+            # Re-plan against the new reference.
+            self.load(self.path)
+
     def refresh(self):
         family = self.state.family
         if self.path and self.loaded_for != (self.family_name(), self.state.part()):
             self._reset_file()
         self.simulator.setVisible(self.family_name() == HALDEX)
         self.no_backup.setVisible(self.family_name() in BACKUP_FAMILIES)
+        self.reference_card.setVisible(self.family_name() == BCM)
         problem = None
         if not family:
             problem = "Choose a module at the top."
@@ -816,7 +843,9 @@ class FlashPage(Page):
         elif not getattr(self, "converted", False):
             self.file_banner.show_message("")
         reference = None
-        if self.state.record and self.family_name() in BACKUP_FAMILIES:
+        if self.family_name() == BCM:
+            reference = self.bcm_reference
+        elif self.state.record and self.family_name() in BACKUP_FAMILIES:
             reference = self.state.record.state()
         self.state.offline("plan_flash", {
             "path": self.path, "family": self.family_name(),
