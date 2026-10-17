@@ -7,6 +7,7 @@ from flasher.controllers.registry import get_family
 
 HALDEX = "haldex-gen4"
 EPS = "pq-eps"
+BCM = "pq-bcm"
 
 # (key, label, start, end, hint).
 PRESETS = {
@@ -25,8 +26,8 @@ PRESETS = {
          "Firmware, configuration and dataset."),
     ),
 }
-FULL = {HALDEX: (0x18000, 0x4FFFF), EPS: (0x0A000, 0x5FFFF)}
-SIZES = {0x50000: HALDEX, 0x60000: EPS, 0x1000: EPS}
+FULL = {HALDEX: (0x18000, 0x4FFFF), EPS: (0x0A000, 0x5FFFF), BCM: (0x780000, 0x7FBFFF)}
+SIZES = {0x50000: HALDEX, 0x60000: EPS, 0x1000: EPS, 0x80000: BCM}
 HALDEX_BLOCKS = ((0x18000, 0x1FFFF), (0x20000, 0x2FFFF), (0x30000, 0x3FFFF), (0x40000, 0x4FFFF))
 
 
@@ -89,6 +90,9 @@ def inspect_image(path: str, family: str = None, ecu_part: str = None,
               f"This looks like a {_family_label(guessed)} image, not {_family_label(family)}.")
         return result
     family = family or guessed
+
+    if family == BCM:
+        return _inspect_bcm(result, data, check, ecu_part)
 
     dataset_file = family == EPS and len(data) == 0x1000
     if dataset_file and data[-8:-4] == DATASET_CRC_MARKER:
@@ -185,7 +189,117 @@ def _part_check(check, family, data, found, ecu_part):
 
 
 def _family_label(family: str) -> str:
-    return {HALDEX: "Haldex Gen4", EPS: "EPS rack"}.get(family, family)
+    return {HALDEX: "Haldex Gen4", EPS: "EPS rack", BCM: "BCM"}.get(family, family)
+
+
+def _bcm():
+    from flasher.controllers.pq_bcm import flash as bcm_flash
+    return bcm_flash
+
+
+def _bcm_sectors_present(bcm, data: bytes) -> list:
+    """Sector starts in the full-span image that hold non-blank (non-0xFF) data."""
+    present = []
+    for start in bcm.pflash_sector_starts():
+        off = start - bcm.BCM_IMAGE_BASE
+        if any(b != 0xFF for b in data[off:off + bcm.PFLASH_SECTOR]):
+            present.append(start)
+    return present
+
+
+def _inspect_bcm(result, data, check, ecu_part) -> dict:
+    """BCM images are full-span (0x780000..0x7FFFFF, 0x80000 bytes, boot-block
+    padded). We can validate size/layout and the part number, but not recompute
+    the module's CRC32 table here; the patch tooling owns that."""
+    bcm = _bcm()
+    present = _bcm_sectors_present(bcm, data)
+    result["metadata"] = {
+        "start_addr": bcm.PFLASH_REGION[0], "end_addr": bcm.PFLASH_REGION[1],
+        "size": bcm.PFLASH_REGION[1] - bcm.PFLASH_REGION[0] + 1,
+        "image_base": bcm.BCM_IMAGE_BASE, "image_size": bcm.BCM_IMAGE_SIZE,
+        "present_sectors": ["0x%06X" % s for s in present],
+        "sector_count": len(bcm.pflash_sector_starts()),
+    }
+    if present:
+        check("sectors", True, f"{len(present)} programmable sector(s) with data",
+              "Only the application P-Flash is written; the boot block is never touched.",
+              level="info")
+    parts = result["part_numbers"]
+    if ecu_part:
+        want = ecu_part.replace(" ", "").upper()
+        if any(p.replace(" ", "").upper().startswith(want[:10]) for p in parts):
+            check("ecu", True, "Matches connected BCM", ecu_part)
+        elif parts:
+            check("ecu", False, f"Image part {parts[0]} vs ECU {ecu_part}",
+                  "Different part number; confirm this image belongs to this BCM.",
+                  level="warning")
+    return result
+
+
+def _plan_bcm(data, reference) -> dict:
+    """Plan a BCM flash by sector. The recommended option is "changed sectors
+    only" when a reference (prior full-span image / backup) is supplied; the
+    full application (all 31 sectors) is always offered. The boot block is never
+    programmed."""
+    bcm = _bcm()
+    options = []
+    notes = ["Only application P-Flash sectors are written. The boot block "
+             "(0x7FC000..0x7FFFFF) is protected by the loader and never touched."]
+    changes = None
+    reference_path = None
+
+    ref = Path(reference).read_bytes() if reference and Path(reference).is_file() else None
+    if ref is not None and len(ref) == len(data):
+        reference_path = str(reference)
+        changed = bcm.changed_sectors(data, ref, base=bcm.BCM_IMAGE_BASE)
+        changes = [{"start": s, "end": s + bcm.PFLASH_SECTOR - 1} for s in changed]
+        if changed:
+            lo, hi = changed[0], changed[-1] + bcm.PFLASH_SECTOR - 1
+            options.append({
+                "key": "changed", "label": "Changed sectors only",
+                "start": lo, "end": hi, "size": len(changed) * bcm.PFLASH_SECTOR,
+                "hint": f"Just the {len(changed)} sector(s) that differ from your backup.",
+                "valid": True, "sectors": list(changed),
+                "metadata": {"sectors": ["0x%06X" % s for s in changed]}})
+
+    # "Present sectors only" and "all 31" both ERASE the unsupplied
+    # 0x7A0000..0x7BFFFF gap (the full-span image pads it with 0xFF). Since the
+    # BCM can't be read back, erasing a sector we have no real content for can
+    # destroy data. So writing by whole image is offered but never recommended,
+    # and only the sectors with real (non-blank) data are included.
+    present = _bcm_sectors_present(bcm, data)
+    all_sectors = list(bcm.pflash_sector_starts())
+    blank = [s for s in all_sectors if s not in present]
+    gap_hint = ""
+    if blank:
+        gap_hint = (f" Skips {len(blank)} blank sector(s) so the unsupplied 0x7A0000-0x7BFFFF "
+                    "gap is not erased.")
+    options.append({
+        "key": "present", "label": f"All sectors with data ({len(present)})",
+        "start": present[0] if present else bcm.PFLASH_REGION[0],
+        "end": (present[-1] + bcm.PFLASH_SECTOR - 1) if present else bcm.PFLASH_REGION[1],
+        "size": len(present) * bcm.PFLASH_SECTOR,
+        "hint": "Every application sector that carries data in this image." + gap_hint,
+        "valid": bool(present), "sectors": present,
+        "metadata": {"sectors": [f"0x{s:06X}" for s in present]}})
+
+    if any(o["key"] == "changed" for o in options):
+        recommended, reason = "changed", f"{len(changes)} sector(s) differ from the reference."
+    elif changes == []:
+        recommended, reason = None, "This image is identical to the reference; flashing changes nothing."
+        for option in options:
+            option.update(valid=False, reason="No sectors differ from the reference.")
+    else:
+        # No reference: do not auto-recommend a whole-image write.
+        recommended = None
+        reason = ("Load the stock full-span image the BCM currently runs as the reference to "
+                  "write only the sectors your patch changed. Without it, you can write every "
+                  "sector that has data, but check nothing else on the module relied on them.")
+        notes.append("The BCM can't be read back, so there is no on-module diff. 'Changed "
+                     "sectors only' needs the stock image you started from as the reference.")
+    return {"family": BCM, "options": options, "reference": reference_path,
+            "changes": changes, "recommended": recommended, "reason": reason,
+            "notes": notes, "needs_dataset": False}
 
 
 def _changed_ranges(new: bytes, old: bytes, low: int, high: int) -> list:
@@ -252,6 +366,8 @@ def _option(family, data, preset, correct_checksum, simulator_mode):
 def plan_flash(path: str, family: str, reference: str = None, correct_checksum=False,
                simulator_mode=False, ecu_version=None) -> dict:
     data = Path(path).read_bytes()
+    if family == BCM:
+        return _plan_bcm(data, reference)
     if family == EPS:
         return _plan_eps(data, ecu_version, correct_checksum)
     return _plan_haldex(data, reference, correct_checksum, simulator_mode)

@@ -34,8 +34,11 @@ HARDWARE_OPERATIONS = {
     "can_config": ["--read-eps-can-config"],
     # Read-only BCM boot/vector page (0x7FC000..0x7FFFFF). Nothing is written.
     "pageff": ["--read-bcm-pageff"],
+    # Read-only BCM pre-flash backup bundle (identity, coding, DTCs, targets, page FF).
+    "backup": ["--bcm-backup"],
 }
 PAGEFF_FLAG = "--read-bcm-pageff"
+BACKUP_FLAG = "--bcm-backup"
 # "chunk 12/256" in whatever the page FF read prints or logs.
 CHUNK = re.compile(r"chunk\s+(\d+)\s*/\s*(\d+)", re.IGNORECASE)
 # An absolute path ending in .bin, spaces allowed ("Saved C:\My Files\x.bin").
@@ -49,7 +52,7 @@ SAMPLE_FLAGS = {
 FAMILY_LABELS = {
     "haldex-gen4": "Haldex Gen4 (AWD)",
     "pq-eps": "EPS steering rack",
-    "pq-bcm": "BCM (read-only)",
+    "pq-bcm": "BCM",
 }
 
 
@@ -313,9 +316,11 @@ class Server:
             "alias": family.module_aliases[0],
             "operations": sorted(family.operations),
             "part_prefixes": list(family.part_prefixes),
-            # The BCM flash path is an unfinished scaffold upstream.
-            "can_flash": family.supports("flash") and family.name != "pq-bcm",
+            "can_flash": family.supports("flash") and (
+                family.name != "pq-bcm" or flasher_has_flag("--bcm-sector")),
             "read_pageff": family.name == "pq-bcm" and flasher_has_flag(PAGEFF_FLAG),
+            "can_backup": family.name == "pq-bcm" and family.supports("backup")
+                          and flasher_has_flag(BACKUP_FLAG),
         } for family in FAMILIES]
 
     def haldex_checksums(self, path):
@@ -356,6 +361,9 @@ class Server:
         if operation == "pageff" and not flasher_has_flag(PAGEFF_FLAG):
             raise WorkerError("This flasher build has no BCM page FF read (--read-bcm-pageff) yet. "
                               "Update the flasher submodule, then restart the app.")
+        if operation == "backup" and not flasher_has_flag(BACKUP_FLAG):
+            raise WorkerError("This flasher build has no BCM backup (--bcm-backup) yet. "
+                              "Update the flasher submodule, then restart the app.")
         if operation == "scan":
             from .scan import scan
             self.lock.acquire()
@@ -380,9 +388,19 @@ class Server:
             if operation in SAMPLE_FLAGS and params.get("samples"):
                 count, interval = SAMPLE_FLAGS[operation]
                 argv += [count, str(params["samples"]), interval, str(params.get("interval_ms", 100))]
+        elif operation == "backup":
+            out = out or tempfile.mkdtemp(prefix="pq35-bcm-backup-")
+            argv += ["--out", out]
         elif operation == "flash":
-            argv += ["--input", params["input"], "--start", hex(params["start"]),
-                     "--end", hex(params["end"]), "--yes"]
+            argv += ["--input", params["input"]]
+            sectors = params.get("sectors")
+            if sectors:
+                # BCM flashes by 16 KiB sector (non-contiguous allowed).
+                for sector in sectors:
+                    argv += ["--bcm-sector", hex(sector) if isinstance(sector, int) else str(sector)]
+            else:
+                argv += ["--start", hex(params["start"]), "--end", hex(params["end"])]
+            argv.append("--yes")
             for flag in ("correct_checksum", "simulator_mode", "recovery"):
                 if params.get(flag):
                     argv.append("--" + flag.replace("_", "-"))
@@ -432,6 +450,13 @@ class Server:
                 failure = f"flasher exited with {code}"
             if failure is None and not result.get("image"):
                 failure = "The page FF read finished but no saved .bin was reported."
+        if operation == "backup":
+            manifest = Path(out) / "backup_manifest.json" if out else None
+            if manifest and manifest.is_file():
+                result["result"] = json.loads(manifest.read_text(encoding="utf-8"))
+            result["backup_dir"] = out
+            if failure is None and code:
+                failure = f"BCM backup finished with exit {code}; see the backup folder."
         if failure is not None:
             result["error"] = failure
             if operation == "flash" and self.last_flash_result is not None:

@@ -18,9 +18,13 @@ from .storage import images_dir, logs_dir, patched_dir, prune_logs, timestamp
 from .widgets import Badge, Banner, Card, DropZone, FlowRow, HoldButton, ProgressPanel, h1, kib, muted, restyle
 
 HALDEX, EPS, BCM = "haldex-gen4", "pq-eps", "pq-bcm"
-# Modules whose firmware can be read back over OBD. EPS racks can't, so there
-# is no backup to require and nothing to diff against.
+# Modules whose full firmware can be read back over OBD and diffed, so the Flash
+# page can require and compare against a backup. EPS and BCM can't be read back
+# in full, so flashing isn't gated on a backup for them.
 BACKUP_FAMILIES = {HALDEX}
+# Modules the Back up page can snapshot. The BCM snapshot is the boot page plus
+# identity/coding (not the full firmware), kept before flashing.
+BACKUP_CAPABLE = {HALDEX, BCM}
 
 
 class Page(QScrollArea):
@@ -469,13 +473,19 @@ class BackupPage(Page):
     def refresh(self):
         record = self.state.record
         family = self.state.family["name"] if self.state.family else None
-        possible = family is None or family in BACKUP_FAMILIES
-        self.not_possible.setVisible(not possible and family != BCM)
-        self.bcm_note.setVisible(family == BCM)
+        possible = family is None or family in BACKUP_CAPABLE
+        self.not_possible.setVisible(not possible)
+        self.bcm_note.setVisible(False)
         self.read_card.setVisible(possible)
         self.history_card.setVisible(possible)
         if not possible:
             return
+        self.read_button.setText("Back up BCM (boot page + coding)" if family == BCM
+                                 else "Read module")
+        self.read_button.setToolTip(
+            "Saves the resident boot page and the BCM's identity/coding. The application "
+            "firmware can't be read back, so this is not a full-image backup."
+            if family == BCM else "")
         self.read_button.setEnabled(bool(record) and not self.state.busy)
         self.open_button.setEnabled(bool(record))
         self.list.clear()
@@ -500,6 +510,9 @@ class BackupPage(Page):
     def read(self):
         record = self.state.record
         out = record.new_backup_dir()
+        family = self.state.family["name"] if self.state.family else None
+        if family == BCM:
+            return self._backup_bcm(record, out)
         self.banner.show_message("Reading… keep the ignition on and don't unplug anything.", "info")
         self.progress.start("Connecting")
 
@@ -535,6 +548,37 @@ class BackupPage(Page):
             self.banner.show_message(self.error_text(error), "error")
 
         self.state.run("readout", {"out": str(out)}, done, failed)
+
+    def _backup_bcm(self, record, out):
+        """BCM snapshot: boot page FF + identity/coding bundle (read-only)."""
+        self.banner.show_message("Backing up the BCM boot page and coding… keep the ignition on.", "info")
+        self.progress.start("Connecting")
+
+        def done(result):
+            self.progress.stop()
+            report = result.get("result") or {}
+            status = report.get("status", "unknown")
+            pageff = (report.get("components") or {}).get("pageff") or {}
+            image = pageff.get("path")
+            if image and Path(image).is_file():
+                record.add({"kind": "backup", "image": image, "dir": result.get("backup_dir") or str(out),
+                            "status": status, "sha256": (pageff.get("sha256") or "").upper(),
+                            "scope": "boot_page+coding", "identity": self.state.identity})
+            if image:
+                self.banner.show_message(
+                    "BCM backup saved: boot page and coding. (The application firmware can't be "
+                    "read back, so this isn't a full-image backup.)",
+                    "ok" if status == "ok" else "warning")
+            else:
+                self.banner.show_message(
+                    "Backup failed. " + str(report.get("error") or result.get("error") or ""), "error")
+            self.refresh()
+
+        def failed(error):
+            self.progress.stop()
+            self.banner.show_message(self.error_text(error), "error")
+
+        self.state.run("backup", {"out": str(out)}, done, failed)
 
 
 class FlashPage(Page):
@@ -849,6 +893,9 @@ class FlashPage(Page):
                   "correct_checksum": self.correct.isChecked(),
                   "simulator_mode": self.simulator.isChecked(),
                   "recovery": self.recovery.isChecked()}
+        if option.get("sectors"):
+            # BCM flashes by 16 KiB sector; the worker builds --bcm-sector args.
+            params["sectors"] = list(option["sectors"])
         self.result_banner.show_message("Flashing. Don't touch the car, the cable or this computer.", "warning")
         self.cycle_button.hide()
         self.progress.start("Connecting")
