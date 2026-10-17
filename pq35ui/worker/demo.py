@@ -61,9 +61,13 @@ class DemoModule:
             data[0x5DFF8:0x5DFFC] = patches.CRC_MARKER
             return patches.update_checksums(bytes(data))
         if family == BCM:
-            # Full-span 0x780000..0x7FFFFF (0x80000), boot-block padded; part string embedded.
-            data = bytearray(b"\xff" * 0x80000)
-            data[0:15] = b"8P0907063E 0040"
+            # Full-span 1 MiB image: byte 0 = global 0x700000, running through
+            # 0x7FFFFF, boot-block padded. The part string lives in the
+            # application window (0x780000), not the all-0xFF 0x700000 head.
+            from flasher.controllers.pq_bcm import flash as bcm_flash
+            data = bytearray(b"\xff" * bcm_flash.BCM_IMAGE_SIZE)
+            app = bcm_flash.PFLASH_REGION[0] - bcm_flash.BCM_IMAGE_BASE
+            data[app:app + 15] = b"8P0907063E 0040"
             return bytes(data)
         return b"\xff" * 0x1000
 
@@ -250,11 +254,20 @@ class DemoModule:
         """Pretend BCM flash: by 16 KiB sector, no patches module. Mirrors the real
         multi-segment path (one session, a cycle per sector-run)."""
         from flasher.controllers.pq_bcm import flash as bcm_flash
+        # The loader stages a verified RAM driver as download #1 before any
+        # application page; mirror the real gating so the demo refuses without
+        # one, exactly as the live flasher CLI does (--bcm-driver is required).
+        driver = params.get("driver")
+        if not driver:
+            raise bcm_flash.BCMFlashNotConfigured(
+                "BCM flash requires a verified RAM driver (download #1); none was supplied.")
+        driver_segment = bcm_flash.prepare_driver(driver)
         if params.get("sectors"):
-            segments = bcm_flash.plan_sectors(params["input"], list(params["sectors"]))
+            app_segments = bcm_flash.plan_sectors(params["input"], list(params["sectors"]))
         else:
-            segments = [bcm_flash.prepare_image(params["input"], params["start"], params["end"])]
-        meta = dict(segments[0]["metadata"])
+            app_segments = [bcm_flash.prepare_image(params["input"], params["start"], params["end"])]
+        segments = bcm_flash.build_segment_plan(driver_segment, app_segments)
+        meta = dict(app_segments[0]["metadata"])
         plan = [{"start_addr": s["metadata"]["start_addr"], "end_addr": s["metadata"]["end_addr"],
                  "size": s["metadata"]["size"], "checksum": s["metadata"]["checksum"]}
                 for s in segments]

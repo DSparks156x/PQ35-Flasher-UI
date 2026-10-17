@@ -633,6 +633,23 @@ class FlashPage(Page):
             "The BCM writes only the 16 KiB sectors that differ from this stock image. "
             "Point it at the full-span .bin the BCM currently runs."))
 
+        # BCM only: the separate RAM-driver .bin the loader stages as download #1
+        # before the first application page. A verified driver is required; the
+        # worker auto-discovers one beside the image, or it can be chosen here.
+        self.bcm_driver = None
+        self.driver_card = self.add(Card("RAM driver"))
+        driver_row = QHBoxLayout()
+        self.driver_button = QPushButton("Choose driver .bin…")
+        self.driver_button.clicked.connect(self._choose_driver)
+        driver_row.addWidget(self.driver_button)
+        self.driver_label = muted("Looking for the driver beside the image…")
+        driver_row.addWidget(self.driver_label, 1)
+        self.driver_card.add(driver_row)
+        self.driver_card.add(muted(
+            "The BCM loader needs a separate 918-byte RAM driver (driver_ram_003800.bin) "
+            "staged before any application page. Put it next to the image, or choose it here. "
+            "Flashing is blocked until a verified driver is available."))
+
         self.range_card = self.add(Card("2. What to write"))
         self.reason = self.range_card.add(muted(""))
         self.plan_notes = self.range_card.add(Banner())
@@ -740,6 +757,30 @@ class FlashPage(Page):
             # Re-plan against the new reference.
             self.load(self.path)
 
+    def _choose_driver(self):
+        path, _ = QFileDialog.getOpenFileName(
+            self, "Choose BCM RAM driver", "", "Driver images (*.bin)")
+        if not path:
+            return
+        self.bcm_driver = path
+        if self.path:
+            # Re-inspect so the chosen driver is verified and the badge updates.
+            self.load(self.path)
+        else:
+            self.driver_label.setText(Path(path).name)
+
+    def _set_driver_status(self):
+        """Reflect the inspection's driver check on the Flash page."""
+        info = (self.inspection or {}).get("driver") or {}
+        if info.get("found"):
+            self.driver_label.setText(f"Verified: {Path(info['path']).name}")
+        elif info.get("explicit"):
+            self.driver_label.setText(info.get("error") or "Driver file failed verification.")
+        elif self.inspection is not None:
+            self.driver_label.setText("No verified driver found — choose the driver .bin.")
+        else:
+            self.driver_label.setText("Looking for the driver beside the image…")
+
     def refresh(self):
         family = self.state.family
         if self.path and self.loaded_for != (self.family_name(), self.state.part()):
@@ -747,6 +788,7 @@ class FlashPage(Page):
         self.simulator.setVisible(self.family_name() == HALDEX)
         self.no_backup.setVisible(self.family_name() in BACKUP_FAMILIES)
         self.reference_card.setVisible(self.family_name() == BCM)
+        self.driver_card.setVisible(self.family_name() == BCM)
         can_precond = (self.family_name() == BCM and self.state.family
                        and self.state.family.get("can_check_preconditions"))
         self.precond.setVisible(bool(can_precond))
@@ -777,8 +819,14 @@ class FlashPage(Page):
         if not self.inspection:
             return "Choose an image."
         allowed = {"checksums": self.correct.isChecked(), "crossflash": self.crossflash.isChecked()}
-        if any(c["level"] == "error" and not allowed.get(c["key"], False)
-               for c in self.inspection["checks"]):
+        errors = [c for c in self.inspection["checks"]
+                  if c["level"] == "error" and not allowed.get(c["key"], False)]
+        if errors:
+            driver_error = next((c for c in errors if c["key"] == "driver"), None)
+            if driver_error:
+                return (driver_error.get("detail")
+                        or "The BCM RAM driver is missing or failed verification. Choose a "
+                           "verified driver .bin before flashing.")
             if any(c["key"] == "crossflash" for c in self.inspection["checks"]):
                 return ("This image is for a different part number (a crossflash). Allow it under "
                         "advanced options if that's what you want.")
@@ -871,7 +919,8 @@ class FlashPage(Page):
             return
         self.state.offline("inspect_image", {"path": path, "family": family,
                                              "ecu_part": self.state.part() or None,
-                                             "ecu_version": (self.state.identity or {}).get("sw_version")},
+                                             "ecu_version": (self.state.identity or {}).get("sw_version"),
+                                             "driver": self.bcm_driver if family == BCM else None},
                            self._inspected, lambda e: self._file_error(e))
 
     def _file_error(self, error):
@@ -881,6 +930,7 @@ class FlashPage(Page):
 
     def _inspected(self, result):
         self.inspection = result
+        self._set_driver_status()
         self.drop.set_file(result["name"], f"{kib(result['size'])} · SHA-256 {result['sha256']}")
         badges = [(c["label"], c["level"], c.get("detail")) for c in result["checks"]]
         self.badges.set_badges(badges)
@@ -984,6 +1034,12 @@ class FlashPage(Page):
         if option.get("sectors"):
             # BCM flashes by 16 KiB sector; the worker builds --bcm-sector args.
             params["sectors"] = list(option["sectors"])
+        if self.family_name() == BCM:
+            # Thread the verified RAM driver through to --bcm-driver. The flash
+            # is gated on a found driver (blocking_reason), so this is present.
+            driver = (self.inspection.get("driver") or {}).get("path")
+            if driver:
+                params["driver"] = driver
         self.result_banner.show_message("Flashing. Don't touch the car, the cable or this computer.", "warning")
         self.cycle_button.hide()
         self.progress.start("Connecting")

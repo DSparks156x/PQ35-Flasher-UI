@@ -1,5 +1,6 @@
 """Offline image checks and flash-range planning. Never touches CAN."""
 import hashlib
+import os
 import re
 from pathlib import Path
 
@@ -26,8 +27,11 @@ PRESETS = {
          "Firmware, configuration and dataset."),
     ),
 }
+# The BCM application window (0x780000..0x7FBFFF) did not move; only the image
+# geometry grew to a full 1 MiB (0x700000-based). guess_family keys off the
+# whole-file size, so a 1 MiB file is the BCM.
 FULL = {HALDEX: (0x18000, 0x4FFFF), EPS: (0x0A000, 0x5FFFF), BCM: (0x780000, 0x7FBFFF)}
-SIZES = {0x50000: HALDEX, 0x60000: EPS, 0x1000: EPS, 0x80000: BCM}
+SIZES = {0x50000: HALDEX, 0x60000: EPS, 0x1000: EPS, 0x100000: BCM}
 HALDEX_BLOCKS = ((0x18000, 0x1FFFF), (0x20000, 0x2FFFF), (0x30000, 0x3FFFF), (0x40000, 0x4FFFF))
 
 
@@ -61,7 +65,7 @@ DATASET_CRC_MARKER = bytes.fromhex("78563412")
 
 
 def inspect_image(path: str, family: str = None, ecu_part: str = None,
-                  ecu_version: str = None) -> dict:
+                  ecu_version: str = None, driver: str = None) -> dict:
     """What is this file, is it intact, and does it belong to the connected ECU?"""
     data = Path(path).read_bytes()
     guessed = guess_family(data)
@@ -92,7 +96,7 @@ def inspect_image(path: str, family: str = None, ecu_part: str = None,
     family = family or guessed
 
     if family == BCM:
-        return _inspect_bcm(result, data, check, ecu_part)
+        return _inspect_bcm(result, data, check, ecu_part, image_path=path, driver=driver)
 
     dataset_file = family == EPS and len(data) == 0x1000
     if dataset_file and data[-8:-4] == DATASET_CRC_MARKER:
@@ -207,10 +211,105 @@ def _bcm_sectors_present(bcm, data: bytes) -> list:
     return present
 
 
-def _inspect_bcm(result, data, check, ecu_part) -> dict:
-    """BCM images are full-span (0x780000..0x7FFFFF, 0x80000 bytes, boot-block
-    padded). We can validate size/layout and the part number, but not recompute
-    the module's CRC32 table here; the patch tooling owns that."""
+def _looks_like_driver_name(name: str) -> bool:
+    """Filenames that name the known-good RAM driver (tried before any .bin)."""
+    low = name.lower()
+    return "driver" in low and ("003800" in low or "ram" in low)
+
+
+def _driver_search_folders(image_path):
+    """Folders to auto-discover a RAM driver in, in priority order.
+
+    The image's own folder comes first (the driver usually ships beside the
+    image). PQ35_BCM_DRIVER may name an extra driver file or a module folder to
+    search as well (the operator's standing driver location)."""
+    folders = []
+    if image_path:
+        parent = Path(image_path).resolve().parent
+        if parent.is_dir():
+            folders.append(parent)
+    extra = os.environ.get("PQ35_BCM_DRIVER", "").strip()
+    if extra:
+        candidate = Path(extra)
+        if candidate.is_dir():
+            folders.append(candidate.resolve())
+        elif candidate.parent.is_dir():
+            folders.append(candidate.parent.resolve())
+    unique, seen = [], set()
+    for folder in folders:
+        key = str(folder).lower()
+        if key not in seen:
+            seen.add(key)
+            unique.append(folder)
+    return unique
+
+
+def _bcm_driver_candidates(bcm, image_path):
+    """Driver-sized .bin files worth trying, driver-named ones first.
+
+    Only files of exactly DRIVER_LEN bytes are considered, so prepare_driver
+    never has to read a 1 MiB image to reject it."""
+    extra = os.environ.get("PQ35_BCM_DRIVER", "").strip()
+    candidates = []
+    if extra and Path(extra).is_file():
+        candidates.append(Path(extra).resolve())
+    for folder in _driver_search_folders(image_path):
+        try:
+            found = sorted(folder.glob("*.bin"))
+        except OSError:
+            continue
+        for path in found:
+            try:
+                if path.is_file() and path.stat().st_size == bcm.DRIVER_LEN:
+                    candidates.append(path.resolve())
+            except OSError:
+                continue
+    unique, seen = [], set()
+    for path in candidates:
+        key = str(path).lower()
+        if key not in seen:
+            seen.add(key)
+            unique.append(path)
+    unique.sort(key=lambda p: (not _looks_like_driver_name(p.name), str(p).lower()))
+    return unique
+
+
+def _resolve_bcm_driver(bcm, image_path, driver) -> dict:
+    """Locate and verify the separate RAM-driver .bin a BCM flash needs.
+
+    An explicit selection always wins (and is reported even when it fails to
+    verify); otherwise the image folder and the configured driver folder are
+    searched for a file prepare_driver accepts. Returns a dict the UI threads
+    back through as the flash `driver` parameter."""
+    if driver:
+        path = Path(driver)
+        if not path.is_file():
+            return {"found": False, "explicit": True, "path": str(driver),
+                    "error": f"The chosen driver file does not exist: {driver}"}
+        try:
+            prepared = bcm.prepare_driver(str(path))
+        except Exception as exc:
+            return {"found": False, "explicit": True, "path": str(path.resolve()),
+                    "error": str(exc)}
+        return {"found": True, "explicit": True, "path": str(path.resolve()),
+                "sha256": bcm.DRIVER_SHA256, "size": prepared["metadata"]["size"]}
+    for path in _bcm_driver_candidates(bcm, image_path):
+        try:
+            prepared = bcm.prepare_driver(str(path))
+        except Exception:
+            continue
+        return {"found": True, "explicit": False, "path": str(path),
+                "sha256": bcm.DRIVER_SHA256, "size": prepared["metadata"]["size"]}
+    return {"found": False, "explicit": False, "path": None}
+
+
+def _inspect_bcm(result, data, check, ecu_part, image_path=None, driver=None) -> dict:
+    """BCM images are full-span (0x700000..0x7FFFFF, 0x100000 bytes / 1 MiB,
+    boot-block padded; the application lives at 0x780000..0x7FBFFF). We can
+    validate size/layout and the part number, but not recompute the module's
+    CRC32 table here; the patch tooling owns that. We also confirm the separate
+    RAM-driver .bin (download #1) is present and verified, since the loader
+    cannot flash a single application page without it."""
     bcm = _bcm()
     present = _bcm_sectors_present(bcm, data)
     result["metadata"] = {
@@ -233,6 +332,23 @@ def _inspect_bcm(result, data, check, ecu_part) -> dict:
             check("ecu", False, f"Image part {parts[0]} vs ECU {ecu_part}",
                   "Different part number; confirm this image belongs to this BCM.",
                   level="warning")
+
+    driver_info = _resolve_bcm_driver(bcm, image_path, driver)
+    result["driver"] = driver_info
+    if driver_info["found"]:
+        check("driver", True, "RAM driver found and verified",
+              f"{Path(driver_info['path']).name} "
+              f"({driver_info['size']} bytes), staged as download #1 before the first "
+              "application page.", level="ok")
+    elif driver_info.get("explicit"):
+        check("driver", False, "Driver file failed verification",
+              driver_info.get("error")
+              or "The chosen file is not the known-good BCM RAM driver.", level="error")
+    else:
+        check("driver", False, "RAM driver missing",
+              "This image cannot be flashed without the separate driver .bin. Put the "
+              "known-good 918-byte driver (driver_ram_003800.bin) next to this image, or "
+              "choose it on the Flash page.", level="error")
     return result
 
 
