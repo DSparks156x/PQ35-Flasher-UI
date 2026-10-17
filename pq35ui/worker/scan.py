@@ -54,11 +54,20 @@ def scan(adapter: dict, progress, open_adapter) -> list:
                 continue
             entry.update(status="responding", tp_tx=tp.tx_addr, tp_rx=tp.rx_addr)
             try:
-                kwp = KWPClient(tp, log_fn=log)
-                raw_ident = kwp.read_ecu_ident(0x9B)
-                raw_status = kwp.read_ecu_ident(0x9C)
-                info = parse_vag_identification(raw_ident, raw_status)
-                decorate = getattr(family.protocol(), "decorate_identification", None)
+                proto = family.protocol()
+                ident_hook = getattr(proto, "read_identification", None)
+                if ident_hook is not None:
+                    # Families with a non-1A identity (e.g. the service-22 BCM,
+                    # which NRC-11s on 1A 9B/9C and would otherwise look "stuck")
+                    # identify through their own hook on the open TP2 channel.
+                    info = ident_hook(tp)
+                    raw_ident = b""
+                else:
+                    kwp = KWPClient(tp, log_fn=log)
+                    raw_ident = kwp.read_ecu_ident(0x9B)
+                    raw_status = kwp.read_ecu_ident(0x9C)
+                    info = parse_vag_identification(raw_ident, raw_status)
+                decorate = getattr(proto, "decorate_identification", None)
                 if decorate is not None:
                     info = decorate(info)
                 info["in_bootloader"] = _in_bootloader(family, info, tp, raw_ident)
