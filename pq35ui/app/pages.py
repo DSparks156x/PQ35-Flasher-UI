@@ -592,6 +592,26 @@ class FlashPage(Page):
         self.plan = None
         self.gate = self.add(Banner())
 
+        # BCM only: a read-only check of the four gates a BCM flash's 10 85 needs
+        # (supply voltage, attempt counter, two flags). Independent of the flash
+        # gate below — run it any time a BCM is connected; nothing is written.
+        self.precond = QWidget()
+        precond_box = QVBoxLayout(self.precond)
+        precond_box.setContentsMargins(0, 0, 0, 0)
+        precond_row = QHBoxLayout()
+        self.precond_button = QPushButton("Check programming conditions")
+        self.precond_button.clicked.connect(self.check_preconditions)
+        precond_row.addWidget(self.precond_button)
+        precond_row.addStretch(1)
+        precond_box.addLayout(precond_row)
+        self.precond_banner = Banner()
+        precond_box.addWidget(self.precond_banner)
+        self.precond_note = muted("")
+        precond_box.addWidget(self.precond_note)
+        self.precond_note.hide()
+        self.add(self.precond)
+        self.precond.hide()
+
         file_card = self.add(Card("1. Choose the image"))
         self.drop = file_card.add(DropZone())
         self.drop.picked.connect(self.load)
@@ -727,6 +747,10 @@ class FlashPage(Page):
         self.simulator.setVisible(self.family_name() == HALDEX)
         self.no_backup.setVisible(self.family_name() in BACKUP_FAMILIES)
         self.reference_card.setVisible(self.family_name() == BCM)
+        can_precond = (self.family_name() == BCM and self.state.family
+                       and self.state.family.get("can_check_preconditions"))
+        self.precond.setVisible(bool(can_precond))
+        self.precond_button.setEnabled(bool(can_precond) and not self.state.busy)
         problem = None
         if not family:
             problem = "Choose a module at the top."
@@ -776,6 +800,41 @@ class FlashPage(Page):
             self.summary.setText(
                 f"Writes {option['label']} (0x{option['start']:05X}-0x{option['end']:05X}, "
                 f"{kib(option['size'])}) from {Path(self.path).name}.")
+
+    # --- programming conditions (BCM, read-only) ---
+
+    def check_preconditions(self):
+        self.precond_button.setEnabled(False)
+        self.precond_note.hide()
+        self.precond_banner.show_message(
+            "Checking programming conditions… nothing is written to the module.", "info")
+
+        def done(result):
+            self.precond_button.setEnabled(not self.state.busy)
+            report = result.get("result") or {}
+            if result.get("error") or not report:
+                self.precond_banner.show_message(
+                    "Couldn't read the programming conditions. "
+                    + str(result.get("error") or ""), "error")
+                self.precond_note.hide()
+                return
+            if report.get("all_ok"):
+                self.precond_banner.show_message(
+                    f"Programming conditions OK — supply {report.get('supply_volts')} V.", "ok")
+                self.precond_note.hide()
+            else:
+                blocking = report.get("blocking") or ["a programming condition isn't met"]
+                self.precond_banner.show_message("Not ready: " + "; ".join(blocking), "warning")
+                note = report.get("scaling_note")
+                self.precond_note.setText(note or "")
+                self.precond_note.setVisible(bool(note))
+
+        def failed(error):
+            self.precond_button.setEnabled(not self.state.busy)
+            self.precond_note.hide()
+            self.precond_banner.show_message(self.error_text(error), "error")
+
+        self.state.run("preconditions", {}, done, failed)
 
     # --- image ---
 

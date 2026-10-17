@@ -174,6 +174,8 @@ class DemoModule:
             result.update(out=str(out), result={"status": "ok", "size": 1024, "path": str(out)})
         elif operation == "pageff":
             result.update(self._pageff(family, params))
+        elif operation == "preconditions":
+            result["result"] = self._preconditions(family, params)
         else:
             result["result"] = self._diagnostic(operation, params)
         result["elapsed_sec"] = round(time.monotonic() - started, 1)
@@ -312,6 +314,23 @@ class DemoModule:
                   "sha256": hashlib.sha256(data).hexdigest().upper(), "demo": True}
         sidecar.write_text(json.dumps(report, indent=2))
         return {"result": report, "image": str(image), "sidecar": str(sidecar), "out": str(out)}
+
+    def _preconditions(self, family, params):
+        """Like --bcm-preconditions: read-only check of the four gates a BCM flash's
+        10 85 needs. PQ35_DEMO_PRECOND_FAIL=1 returns a blocked (low-supply) set so the
+        UI's red path can be demoed."""
+        scaling_note = ("voltage scaling (mV) is inferred, not read from the module; treat "
+                        "the volts as approximate.")
+        if os.environ.get("PQ35_DEMO_PRECOND_FAIL"):
+            return {"supply_raw": 11800, "supply_volts": 11.8, "supply_ok": False,
+                    "attempt_counter": 0, "counter_ok": True,
+                    "flag_2d09": 0, "flag_2d09_ok": True, "flag_0068": 0, "flag_0068_ok": True,
+                    "all_ok": False, "blocking": ["supply 11.80 V (needs >= 12.00 V)"],
+                    "scaling_note": scaling_note, "demo": True}
+        return {"supply_raw": 13200, "supply_volts": 13.2, "supply_ok": True,
+                "attempt_counter": 0, "counter_ok": True,
+                "flag_2d09": 0, "flag_2d09_ok": True, "flag_0068": 0, "flag_0068_ok": True,
+                "all_ok": True, "blocking": [], "scaling_note": scaling_note, "demo": True}
 
     def _diagnostic(self, operation, params):
         rng = random.Random()

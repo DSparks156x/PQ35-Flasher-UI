@@ -36,9 +36,12 @@ HARDWARE_OPERATIONS = {
     "pageff": ["--read-bcm-pageff"],
     # Read-only BCM pre-flash backup bundle (identity, coding, DTCs, targets, page FF).
     "backup": ["--bcm-backup"],
+    # Read-only BCM programming-condition check (supply, counter, flags). Nothing is written.
+    "preconditions": ["--bcm-preconditions"],
 }
 PAGEFF_FLAG = "--read-bcm-pageff"
 BACKUP_FLAG = "--bcm-backup"
+PRECONDITIONS_FLAG = "--bcm-preconditions"
 # "chunk 12/256" in whatever the page FF read prints or logs.
 CHUNK = re.compile(r"chunk\s+(\d+)\s*/\s*(\d+)", re.IGNORECASE)
 # An absolute path ending in .bin, spaces allowed ("Saved C:\My Files\x.bin").
@@ -321,6 +324,7 @@ class Server:
             "read_pageff": family.name == "pq-bcm" and flasher_has_flag(PAGEFF_FLAG),
             "can_backup": family.name == "pq-bcm" and family.supports("backup")
                           and flasher_has_flag(BACKUP_FLAG),
+            "can_check_preconditions": family.name == "pq-bcm" and flasher_has_flag(PRECONDITIONS_FLAG),
         } for family in FAMILIES]
 
     def haldex_checksums(self, path):
@@ -363,6 +367,9 @@ class Server:
                               "Update the flasher submodule, then restart the app.")
         if operation == "backup" and not flasher_has_flag(BACKUP_FLAG):
             raise WorkerError("This flasher build has no BCM backup (--bcm-backup) yet. "
+                              "Update the flasher submodule, then restart the app.")
+        if operation == "preconditions" and not flasher_has_flag(PRECONDITIONS_FLAG):
+            raise WorkerError("This flasher build has no BCM precondition check yet. "
                               "Update the flasher submodule, then restart the app.")
         if operation == "scan":
             from .scan import scan
