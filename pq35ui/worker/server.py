@@ -259,7 +259,7 @@ class Server:
         if method == "inspect_image":
             from . import images
             return images.inspect_image(params["path"], params.get("family"), params.get("ecu_part"),
-                                        params.get("ecu_version"))
+                                        params.get("ecu_version"), params.get("driver"))
         if method == "plan_flash":
             from . import images
             return images.plan_flash(params["path"], params["family"], params.get("reference"),
@@ -400,6 +400,11 @@ class Server:
             argv += ["--out", out]
         elif operation == "flash":
             argv += ["--input", params["input"]]
+            # A BCM flash stages a verified RAM driver as download #1; the UI
+            # resolves and verifies its path (image inspection) and threads it
+            # here. Haldex/EPS flashes never carry a driver.
+            if params.get("driver"):
+                argv += ["--bcm-driver", params["driver"]]
             sectors = params.get("sectors")
             if sectors:
                 # BCM flashes by 16 KiB sector (non-contiguous allowed).
