@@ -269,12 +269,15 @@ class MainWindow(QMainWindow):
                                       or state.family["name"] not in pages.BACKUP_FAMILIES),
             "flash": has_family and state.family.get("can_flash", False),
             "patches": has_family and state.family["name"] in (pages.EPS, pages.HALDEX),
+            # The BCM's only diagnostic is the page FF dump, which isn't in DIAGNOSTICS.
             "diagnostics": bool(state.identity) and has_family
-            and bool(set(state.family["operations"]) & {op for op, *_ in pages.DIAGNOSTICS}),
+            and (bool(set(state.family["operations"]) & {op for op, *_ in pages.DIAGNOSTICS})
+                 or "pageff" in state.family["operations"]),
         }
         backup_item = self.nav.item(1)
         no_backup = has_family and state.family["name"] not in pages.BACKUP_FAMILIES
-        backup_item.setText("Back up (not for EPS)" if no_backup else "Back up")
+        backup_item.setText(("Back up (not for EPS)" if state.family["name"] == pages.EPS
+                             else "Back up (not available)") if no_backup else "Back up")
         for row in range(self.nav.count()):
             item = self.nav.item(row)
             on = enabled[item.data(Qt.ItemDataRole.UserRole)]

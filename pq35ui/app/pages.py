@@ -437,6 +437,11 @@ class BackupPage(Page):
             "the placeholder 000 dataset, so going back to stock means both."))
         self.not_possible.add(Banner()).show_message(
             "Nothing to do here for EPS. Go to Flash when you're ready.", "info")
+        # BCM: no firmware backup here; its read-only page FF dump is on Diagnostics.
+        self.bcm_note = self.add(Card("No firmware backup for the BCM here"))
+        self.bcm_note.add(muted(
+            "This app can't read the BCM's full firmware back. The read-only boot page FF "
+            "dump is on the Diagnostics page."))
         card = self.add(Card("Read the module"))
         self.read_card = card
         card.add(muted("Copies the firmware off the module into your library. It's your way "
@@ -465,7 +470,8 @@ class BackupPage(Page):
         record = self.state.record
         family = self.state.family["name"] if self.state.family else None
         possible = family is None or family in BACKUP_FAMILIES
-        self.not_possible.setVisible(not possible)
+        self.not_possible.setVisible(not possible and family != BCM)
+        self.bcm_note.setVisible(family == BCM)
         self.read_card.setVisible(possible)
         self.history_card.setVisible(possible)
         if not possible:
