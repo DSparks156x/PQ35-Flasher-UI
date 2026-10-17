@@ -17,7 +17,7 @@ from PySide6.QtWidgets import (
 from .storage import images_dir, logs_dir, patched_dir, prune_logs, timestamp
 from .widgets import Badge, Banner, Card, DropZone, FlowRow, HoldButton, ProgressPanel, h1, kib, muted, restyle
 
-HALDEX, EPS = "haldex-gen4", "pq-eps"
+HALDEX, EPS, BCM = "haldex-gen4", "pq-eps", "pq-bcm"
 # Modules whose firmware can be read back over OBD. EPS racks can't, so there
 # is no backup to require and nothing to diff against.
 BACKUP_FAMILIES = {HALDEX}
@@ -1147,6 +1147,7 @@ class DiagnosticsPage(Page):
         self.add(muted("Read-only. None of these clear faults or write anything. "
                        "Run them with the car stationary."))
         card = self.add(Card("Read"))
+        self.read_card = card
         grid = QGridLayout()
         self.buttons = {}
         for index, (op, label, hint) in enumerate(DIAGNOSTICS):
@@ -1164,18 +1165,57 @@ class DiagnosticsPage(Page):
         row.addStretch(1)
         card.add(row)
         self.banner = card.add(Banner())
+        self._build_pageff()
         out = self.add(Card("Result"))
+        self.result_card = out
         self.tree = out.add(QTreeWidget())
         self.tree.setHeaderLabels(["Field", "Value"])
         self.tree.setColumnWidth(0, 280)
         self.tree.setMinimumHeight(260)
         self.finish()
+        state.progress.connect(self.on_progress)
+
+    def _build_pageff(self):
+        # BCM only. A memory read, nothing like the Flash page: no erase, no write.
+        card = self.add(Card("BCM boot page FF (read-only)"))
+        self.pageff_card = card
+        card.add(muted("Reads the 16 KiB boot/vector page (0x7FC000–0x7FFFFF) off the BCM over "
+                       "TP2.0 and saves it with a JSON sidecar in the module's folder. Nothing is "
+                       "written to the module. About 256 small reads; keep the ignition on."))
+        row = QHBoxLayout()
+        self.pageff_button = QPushButton("Dump BCM page FF (read-only, safe)")
+        self.pageff_button.clicked.connect(self.dump_pageff)
+        row.addWidget(self.pageff_button)
+        self.pageff_open = QPushButton("Open dump")
+        self.pageff_open.clicked.connect(lambda: self._open(self.pageff_paths.get("image")))
+        row.addWidget(self.pageff_open)
+        self.pageff_sidecar = QPushButton("Open sidecar")
+        self.pageff_sidecar.clicked.connect(lambda: self._open(self.pageff_paths.get("sidecar")))
+        row.addWidget(self.pageff_sidecar)
+        self.pageff_folder = QPushButton("Open folder")
+        self.pageff_folder.clicked.connect(lambda: self._open(self.pageff_paths.get("out")))
+        row.addWidget(self.pageff_folder)
+        row.addStretch(1)
+        card.add(row)
+        self.pageff_progress = card.add(ProgressPanel())
+        self.pageff_banner = card.add(Banner())
+        self.pageff_result = card.add(muted(""))
+        self.pageff_result.setTextInteractionFlags(Qt.TextInteractionFlag.TextSelectableByMouse)
+        self.pageff_result.setWordWrap(True)
+        self.pageff_paths = {}
+        self.pageff_running = False
 
     def refresh(self):
         ops = set(self.state.family["operations"]) if self.state.family else set()
         for op, button in self.buttons.items():
             button.setVisible(op in ops)
             button.setEnabled(bool(self.state.identity) and not self.state.busy)
+        bcm = bool(self.state.family) and self.state.family["name"] == BCM
+        self.read_card.setVisible(not bcm)
+        self.result_card.setVisible(not bcm)
+        self.pageff_card.setVisible(bcm)
+        if bcm:
+            self._refresh_pageff()
         if not ops & set(self.buttons):
             self.banner.show_message("No diagnostics for this module yet.", "info")
         elif not self.state.identity:
@@ -1202,6 +1242,80 @@ class DiagnosticsPage(Page):
             self.tree.expandToDepth(1)
 
         self.state.run(op, params, done, lambda e: self.banner.show_message(self.error_text(e), "error"))
+
+    def _pageff_available(self):
+        demo = bool(self.state.adapter) and self.state.adapter.get("adapter") == "demo"
+        return demo or bool(self.state.family.get("read_pageff"))
+
+    def _refresh_pageff(self):
+        available = self._pageff_available()
+        self.pageff_button.setEnabled(available and bool(self.state.identity) and not self.state.busy)
+        for button, key in ((self.pageff_open, "image"), (self.pageff_sidecar, "sidecar"),
+                            (self.pageff_folder, "out")):
+            button.setEnabled(bool(self.pageff_paths.get(key)))
+        if self.pageff_running:
+            return
+        if not available:
+            self.pageff_banner.show_message(
+                "This flasher build can't read page FF yet (no --read-bcm-pageff). Update the "
+                "flasher submodule, then restart the app.", "warning")
+        elif not self.state.identity:
+            self.pageff_banner.show_message("Identify the module on the Connect page first.", "info")
+        elif not self.pageff_paths and self.pageff_banner.property("level") != "error":
+            self.pageff_banner.hide()
+
+    def on_progress(self, message):
+        if self.pageff_running:
+            self.pageff_progress.update_from(message)
+
+    def _open(self, path):
+        if path:
+            QDesktopServices.openUrl(QUrl.fromLocalFile(str(path)))
+
+    def dump_pageff(self):
+        params = {}
+        if self.state.record:
+            params["out_dir"] = str(self.state.record.root / "PageFF")
+        self.pageff_paths = {}
+        self.pageff_result.setText("")
+        self.pageff_banner.show_message("Reading page FF… nothing is written to the module.", "info")
+        self.pageff_progress.start("Connecting")
+
+        def finished():
+            self.pageff_running = False
+            self.pageff_progress.stop()
+
+        def done(result):
+            finished()
+            image = result.get("image")
+            if image and Path(image).is_file():
+                self.pageff_paths = {key: result.get(key) for key in ("image", "sidecar", "out")}
+                if self.state.record:
+                    import hashlib
+                    sha = hashlib.sha256(Path(image).read_bytes()).hexdigest().upper()
+                    self.state.record.add({"kind": "pageff", "image": image,
+                                           "sidecar": result.get("sidecar"), "sha256": sha,
+                                           "identity": self.state.identity})
+                self.pageff_result.setText(
+                    f"Dump: {image}  ({kib(Path(image).stat().st_size)})\n"
+                    f"Sidecar: {result.get('sidecar') or 'none found'}")
+            if result.get("error") or not self.pageff_paths:
+                text = str(result.get("error") or "The read failed.")
+                if result.get("exit_code"):
+                    text += f" (exit code {result['exit_code']})"
+                self.pageff_banner.show_message(text + " See the Log page for details.", "error")
+            else:
+                self.pageff_banner.show_message("Page FF saved. Nothing was written to the module.", "ok")
+            self.refresh()
+
+        def failed(error):
+            finished()
+            self.pageff_banner.show_message(self.error_text(error), "error")
+            self.refresh()
+
+        self.pageff_running = self.state.run("pageff", params, done, failed)
+        if not self.pageff_running:
+            self.pageff_progress.stop()
 
     def _fill(self, parent, value):
         if isinstance(value, dict):

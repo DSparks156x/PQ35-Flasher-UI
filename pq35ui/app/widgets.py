@@ -243,7 +243,7 @@ def colors():
 
 
 STAGES = {
-    "READ": "Reading", "EPS READ": "Reading", "DEMO READ": "Reading",
+    "READ": "Reading", "EPS READ": "Reading", "DEMO READ": "Reading", "PAGE FF": "Reading page FF",
     "CONNECTING": "Connecting", "SECURITY": "Unlocking", "PROGRAMMING": "Entering programming",
     "ERASING": "Erasing", "WRITING": "Writing", "VERIFYING": "Verifying checksum",
     "REBOOTING": "Restarting the module", "COMPLETE": "Done",

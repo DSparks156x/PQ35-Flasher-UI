@@ -167,6 +167,8 @@ class DemoModule:
             out = Path(params.get("out") or self.root / "eeprom.bin")
             out.write_bytes(bytes(random.Random(1).randrange(256) for _ in range(1024)))
             result.update(out=str(out), result={"status": "ok", "size": 1024, "path": str(out)})
+        elif operation == "pageff":
+            result.update(self._pageff(family, params))
         else:
             result["result"] = self._diagnostic(operation, params)
         result["elapsed_sec"] = round(time.monotonic() - started, 1)
@@ -234,6 +236,26 @@ class DemoModule:
                                commit_outcome="acknowledged", recovery_required=False,
                                recovery_mode=params.get("recovery", False),
                                application=self.identity(family), demo=True)}
+
+    def _pageff(self, family, params):
+        """Like --read-bcm-pageff: 256 uploads of 0x40 bytes, then a .bin and a sidecar."""
+        identity = self.identity(family)
+        out = Path(params.get("out_dir") or self.root)
+        out.mkdir(parents=True, exist_ok=True)
+        data = bytearray()
+        for chunk in range(1, 257):
+            data += bytes(random.Random(chunk).randrange(256) for _ in range(0x40))
+            self.server.progress("PAGE FF", 100 * chunk / 256, f"chunk {chunk}/256")
+            self._sleep(0.02)
+        stamp = time.strftime("%Y%m%dT%H%M%SZ", time.gmtime())
+        image = out / f"{identity['software_part_number']}_{identity['sw_version']}_pageFF_{stamp}.bin"
+        image.write_bytes(bytes(data))
+        sidecar = image.with_suffix(".json")
+        report = {"operation": "read_bcm_pageff", "status": "ok", "start": "0x7FC000",
+                  "end": "0x7FFFFF", "size": len(data), "chunks": 256,
+                  "sha256": hashlib.sha256(data).hexdigest().upper(), "demo": True}
+        sidecar.write_text(json.dumps(report, indent=2))
+        return {"result": report, "image": str(image), "sidecar": str(sidecar), "out": str(out)}
 
     def _diagnostic(self, operation, params):
         rng = random.Random()
