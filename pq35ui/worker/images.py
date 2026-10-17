@@ -522,6 +522,10 @@ def compose_state(path: str, family: str, start: int, end: int, out: str, refere
     """After a verified flash: the ECU now holds the previous state with the
     flashed range replaced. Without a previous state only a full flash tells
     us what is on the ECU."""
+    if family == BCM:
+        # The BCM can't be read back and has no patches module; there is no
+        # full-image on-module state to compose.
+        return {"written": False, "reason": "BCM has no full-image state to compose"}
     data = Path(path).read_bytes()
     prepared = _prepare(family, data, start, end, correct_checksum=correct_checksum,
                         simulator_mode=simulator_mode)

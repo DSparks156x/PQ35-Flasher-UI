@@ -19,7 +19,7 @@ HALDEX, EPS, BCM = "haldex-gen4", "pq-eps", "pq-bcm"
 DEFAULT_IDENTITY = {
     HALDEX: ("0BR907554A", "6816", "Haldex 4Motion"),
     EPS: ("1K0909144R", "3501", "EPS_ZFLS Kl.3"),
-    BCM: ("8P0907063E", "0040", "Bordnetz-SG"),
+    BCM: ("8P0907063E", "0575", "Bordnetz-SG"),
 }
 SEED_ENV = {HALDEX: "PQ35_DEMO_HALDEX", EPS: "PQ35_DEMO_EPS"}
 
@@ -60,6 +60,11 @@ class DemoModule:
             data = bytearray(b"\xff" * patches.IMAGE_SIZE)
             data[0x5DFF8:0x5DFFC] = patches.CRC_MARKER
             return patches.update_checksums(bytes(data))
+        if family == BCM:
+            # Full-span 0x780000..0x7FFFFF (0x80000), boot-block padded; part string embedded.
+            data = bytearray(b"\xff" * 0x80000)
+            data[0:15] = b"8P0907063E 0040"
+            return bytes(data)
         return b"\xff" * 0x1000
 
     def identity(self, family) -> dict:
@@ -191,6 +196,8 @@ class DemoModule:
         return {"out": str(out), "result": report, "image": str(out / name)}
 
     def _flash(self, family, params):
+        if family == BCM:
+            return self._flash_bcm(family, params)
         patches = get_family(family).patches()
         prepared = patches.prepare_image(
             params["input"], params["start"], params["end"],
@@ -233,6 +240,55 @@ class DemoModule:
                                    demo=True)}
         self.server.progress("COMPLETE", 100, "Transfer/checksum, commit and fresh application boot verified")
         return {"result": dict(metadata, status="ok", checksum_verified=True, boot_verified=True,
+                               commit_outcome="acknowledged", recovery_required=False,
+                               recovery_mode=params.get("recovery", False),
+                               application=self.identity(family), demo=True)}
+
+    def _flash_bcm(self, family, params):
+        """Pretend BCM flash: by 16 KiB sector, no patches module. Mirrors the real
+        multi-segment path (one session, a cycle per sector-run)."""
+        from flasher.controllers.pq_bcm import flash as bcm_flash
+        if params.get("sectors"):
+            segments = bcm_flash.plan_sectors(params["input"], list(params["sectors"]))
+        else:
+            segments = [bcm_flash.prepare_image(params["input"], params["start"], params["end"])]
+        meta = dict(segments[0]["metadata"])
+        plan = [{"start_addr": s["metadata"]["start_addr"], "end_addr": s["metadata"]["end_addr"],
+                 "size": s["metadata"]["size"], "checksum": s["metadata"]["checksum"]}
+                for s in segments]
+        meta["segments"] = plan
+        if params.get("dry_run"):
+            return {"result": dict(meta, status="validated", dry_run=True)}
+        history = self._history(family)
+        history["attempts"] += 1
+        self._save_history(family, history)
+        for stage, percent, detail in (("CONNECTING", 5, "Opening exclusive diagnostic session"),
+                                       ("SECURITY", 15, "Seed/key accepted (27 01/02)"),
+                                       ("PROGRAMMING", 22, "Resident loader ready")):
+            self.server.progress(stage, percent, detail)
+            self._sleep(0.6)
+        image = bytearray(self.image(family))
+        for index, seg in enumerate(segments):
+            md = seg["metadata"]
+            lo = 25 + 65 * index // len(segments)
+            hi = 25 + 65 * (index + 1) // len(segments)
+            self.server.progress("ERASING", lo,
+                                 f"Erasing 0x{md['start_addr']:06X}..0x{md['end_addr']:06X}")
+            self._sleep(0.4)
+            self._transfer("WRITING", lo, hi, md["size"], min(6.0, max(1.0, md["size"] / 3400 / 4)))
+            off = md["start_addr"] - bcm_flash.BCM_IMAGE_BASE
+            if 0 <= off and off + md["size"] <= len(image):
+                image[off:off + md["size"]] = seg["region"]
+        self.server.progress("VERIFYING", 93, "Checking transferred sector checksums (31 C5)")
+        self._sleep(0.8)
+        self.server.progress("REBOOTING", 96, "Committing; marker cleared, booting application")
+        self._sleep(1.0)
+        self.image_path(family).write_bytes(bytes(image))
+        history["successes"] += 1
+        history["date"] = time.strftime("%Y-%m-%d")
+        self._save_history(family, history)
+        self.server.progress("COMPLETE", 100, "Sectors, checksum, commit and application boot verified")
+        return {"result": dict(meta, status="ok", checksum_verified=True, boot_verified=True,
                                commit_outcome="acknowledged", recovery_required=False,
                                recovery_mode=params.get("recovery", False),
                                application=self.identity(family), demo=True)}
