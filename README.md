@@ -122,6 +122,12 @@ PySide6 UI (64-bit)  ──JSON lines──▶  worker  ──▶  flasher (subm
     understood yet.
   - A full flash of a factory image with the `000` placeholder dataset prompts you to
     flash a real dataset straight after.
+  - **Patch…** on the Flash page patches the chosen image before you flash it. The
+    choices are HCA timeout/minimum speed, slew and HCA gains, whichever fit its firmware.
+    The patched copy goes in `Patched` and the chosen file never changes. Patching again
+    starts from the original, so it replaces the earlier choice. The default write is the
+    block the patches changed. When they change both 0x5D and 0x5E, the default is the
+    full firmware, or you can write the two blocks in two flashes.
 - **A checklist and a 3-second hold-to-flash** replace typing `YES`. Recovery mode
   needs `RECOVER` typed.
 - **While flashing**, the window refuses to close and the computer is kept awake.

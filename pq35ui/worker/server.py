@@ -265,13 +265,14 @@ class Server:
             return images.plan_flash(params["path"], params["family"], params.get("reference"),
                                      params.get("correct_checksum", False),
                                      params.get("simulator_mode", False),
-                                     params.get("ecu_version"))
-        if method == "eps_patch_status":
+                                     params.get("ecu_version"), params.get("patched_from"))
+        if method == "eps_patch_options":
             from . import images
-            return images.eps_patch_status(params["path"])
-        if method == "eps_patch":
+            return images.eps_patch_options(params["path"], params.get("current"))
+        if method == "eps_apply_patches":
             from . import images
-            return images.eps_patch(params["path"], params["feature"], params["out"])
+            return images.eps_apply_patches(params["path"], params["out"],
+                                            params.get("features") or (), params.get("gains"))
         if method == "compose_state":
             from . import images
             return images.compose_state(params["path"], params["family"], params["start"],
