@@ -126,8 +126,11 @@ PySide6 UI (64-bit)  ──JSON lines──▶  worker  ──▶  flasher (subm
     choices are HCA timeout/minimum speed, slew and HCA gains, whichever fit its firmware.
     The patched copy goes in `Patched` and the chosen file never changes. Patching again
     starts from the original, so it replaces the earlier choice. The default write is the
-    block the patches changed. When they change both 0x5D and 0x5E, the default is the
-    full firmware, or you can write the two blocks in two flashes.
+    block the patches changed. When they change both 0x5D and 0x5E, write the two
+    blocks in two flashes.
+  - Full EPS flashes are disabled (only Recovery may try one): the loader's erase of the
+    application drops the connection, so the flash fails and leaves the rack erased in
+    its bootloader.
 - **A checklist and a 3-second hold-to-flash** replace typing `YES`. Recovery mode
   needs `RECOVER` typed.
 - **While flashing**, the window refuses to close and the computer is kept awake.

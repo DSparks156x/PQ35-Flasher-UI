@@ -478,13 +478,14 @@ def _option(family, data, preset, correct_checksum, simulator_mode):
 
 
 def plan_flash(path: str, family: str, reference: str = None, correct_checksum=False,
-               simulator_mode=False, ecu_version=None, patched_from: str = None) -> dict:
+               simulator_mode=False, ecu_version=None, patched_from: str = None,
+               recovery=False) -> dict:
     data = Path(path).read_bytes()
     if family == BCM:
         return _plan_bcm(data, reference)
     if family == EPS:
         source = Path(patched_from).read_bytes() if patched_from and Path(patched_from).is_file() else None
-        return _plan_eps(data, ecu_version, correct_checksum, source)
+        return _plan_eps(data, ecu_version, correct_checksum, source, recovery)
     return _plan_haldex(data, reference, correct_checksum, simulator_mode)
 
 
@@ -500,7 +501,7 @@ def _patched_blocks(data: bytes, source) -> set:
             for name, status in (known_patches(data) or {}).items() if status == "applied"}
 
 
-def _plan_eps(data, ecu_version, correct_checksum, source=None) -> dict:
+def _plan_eps(data, ecu_version, correct_checksum, source=None, recovery=False) -> dict:
     """EPS racks can't be read back, so there is no diff. Which blocks may be
     written depends on the module's firmware:
       0x5E dataset   firmware 3000+, and not the factory placeholder dataset
@@ -551,6 +552,13 @@ def _plan_eps(data, ecu_version, correct_checksum, source=None) -> dict:
         options.append(config)
 
         full = _option(EPS, data, presets["full"], correct_checksum, False)
+        if full["valid"] and not recovery:
+            # The flasher refuses it too: the loader's blocking whole-application
+            # erase drops the channel, the flash fails and the rack is left erased.
+            full.update(valid=False, reason=(
+                "Full EPS flashes are disabled: the loader's erase of the application "
+                "drops the connection, so the flash fails and leaves the rack erased in "
+                "its bootloader. Only Recovery may try it."))
         if full["valid"] and module is not None and module < 2901:
             full.update(valid=False, reason=(
                 f"This module runs {module}. Upgrading from firmware below 2901 needs more "
