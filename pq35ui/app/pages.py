@@ -685,7 +685,13 @@ class FlashPage(Page):
         self.recovery = QCheckBox("Recovery: the module is stuck in its bootloader and won't identify")
         self.no_backup = QCheckBox("Flash without a backup (not recommended)")
         self.crossflash = QCheckBox("Crossflash: allow an image for a different part number")
-        for box in (self.correct, self.simulator, self.recovery, self.no_backup, self.crossflash):
+        # EPS only. A whole-application erase completes but drops the channel, so
+        # the flash fails with the range already blank; this writes it without
+        # erasing again (the loader skips the erase after a second download).
+        self.preerased = QCheckBox("EPS already erased by an interrupted full flash: write the "
+                                   "full firmware without erasing again (Recovery only)")
+        for box in (self.correct, self.simulator, self.recovery, self.no_backup, self.crossflash,
+                    self.preerased):
             adv.addWidget(box)
             box.toggled.connect(self._options_changed)
         advanced.add(self.advanced)
@@ -737,7 +743,7 @@ class FlashPage(Page):
         self.advanced.setVisible(on)
         if not on:
             for box in (self.correct, self.simulator, self.recovery, self.no_backup,
-                        self.crossflash):
+                        self.crossflash, self.preerased):
                 box.setChecked(False)
         if self.plan:
             self._planned(self.plan)
@@ -803,6 +809,7 @@ class FlashPage(Page):
             self._reset_file()
         self.simulator.setVisible(self.family_name() == HALDEX)
         self.no_backup.setVisible(self.family_name() in BACKUP_FAMILIES)
+        self.preerased.setVisible(self.family_name() == EPS)
         self.reference_card.setVisible(self.family_name() == BCM)
         self.driver_card.setVisible(self.family_name() == BCM)
         patchable = (self.family_name() == EPS and bool(self.inspection)
@@ -854,6 +861,8 @@ class FlashPage(Page):
         option = self.selected_option()
         if not option:
             return self.plan["reason"] if self.plan and not self.plan.get("recommended") else "Choose what to write."
+        if self.preerased.isChecked() and not (self.recovery.isChecked() and option["key"] == "full"):
+            return ("\"Already erased\" needs Recovery turned on and Full firmware selected.")
         if not all(box.isChecked() for box in self.checks):
             return "Tick every item in the checklist."
         return None
@@ -1105,6 +1114,8 @@ class FlashPage(Page):
                   "correct_checksum": self.correct.isChecked(),
                   "simulator_mode": self.simulator.isChecked(),
                   "recovery": self.recovery.isChecked()}
+        if self.family_name() == EPS and self.preerased.isChecked():
+            params["preerased"] = True
         if option.get("sectors"):
             # BCM flashes by 16 KiB sector; the worker builds --bcm-sector args.
             params["sectors"] = list(option["sectors"])

@@ -417,6 +417,8 @@ class Server:
             for flag in ("correct_checksum", "simulator_mode", "recovery"):
                 if params.get(flag):
                     argv.append("--" + flag.replace("_", "-"))
+            if params.get("preerased"):
+                argv.append("--eps-preerased")
         if params.get("dry_run"):
             argv.append("--dry-run")
         if params.get("verbose"):
