@@ -265,7 +265,8 @@ class Server:
             return images.plan_flash(params["path"], params["family"], params.get("reference"),
                                      params.get("correct_checksum", False),
                                      params.get("simulator_mode", False),
-                                     params.get("ecu_version"), params.get("patched_from"))
+                                     params.get("ecu_version"), params.get("patched_from"),
+                                     params.get("recovery", False))
         if method == "eps_patch_options":
             from . import images
             return images.eps_patch_options(params["path"], params.get("current"))
@@ -417,8 +418,6 @@ class Server:
             for flag in ("correct_checksum", "simulator_mode", "recovery"):
                 if params.get(flag):
                     argv.append("--" + flag.replace("_", "-"))
-            if params.get("preerased"):
-                argv.append("--eps-preerased")
         if params.get("dry_run"):
             argv.append("--dry-run")
         if params.get("verbose"):
