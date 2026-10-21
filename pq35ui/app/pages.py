@@ -617,6 +617,21 @@ class FlashPage(Page):
         self.drop.picked.connect(self.load)
         self.badges = file_card.add(FlowRow())
         self.file_banner = file_card.add(Banner())
+        # EPS only: patch the chosen image in place. The patched copy is saved to
+        # the Patched folder and flashed; the chosen file itself never changes.
+        self.patch_source = None
+        self.patch_info = None
+        self.patch_row = QWidget()
+        patch_box = QHBoxLayout(self.patch_row)
+        patch_box.setContentsMargins(0, 0, 0, 0)
+        self.patch_button = QPushButton("Patch…")
+        self.patch_button.clicked.connect(self.open_patches)
+        patch_box.addWidget(self.patch_button)
+        self.patch_label = muted("")
+        self.patch_label.setWordWrap(True)
+        patch_box.addWidget(self.patch_label, 1)
+        file_card.add(self.patch_row)
+        self.patch_row.hide()
 
         # BCM only: the stock full-span image the module currently runs. The plan
         # diffs against it and writes just the 16 KiB sectors that differ.
@@ -700,6 +715,7 @@ class FlashPage(Page):
         self.finish()
         state.progress.connect(self.on_progress)
         state.open_in_flash.connect(self.load)
+        state.open_patched_in_flash.connect(lambda path, source: self.load(path, patched_from=source))
         state.start_recovery.connect(self.begin_recovery)
 
     # --- state ---
@@ -739,7 +755,7 @@ class FlashPage(Page):
                                 "only with the exact image made for it.\n\n"
                                 "Flashing the wrong image in recovery mode bricks the module.")
         if self.path:
-            self.load(self.path)
+            self.load(self.path, patched_from=self.patch_source, patch_info=self.patch_info)
         else:
             self.refresh()
 
@@ -789,6 +805,10 @@ class FlashPage(Page):
         self.no_backup.setVisible(self.family_name() in BACKUP_FAMILIES)
         self.reference_card.setVisible(self.family_name() == BCM)
         self.driver_card.setVisible(self.family_name() == BCM)
+        patchable = (self.family_name() == EPS and bool(self.inspection)
+                     and self.inspection.get("guessed_family") == EPS)
+        self.patch_row.setVisible(patchable)
+        self.patch_button.setEnabled(patchable and not self.state.busy)
         can_precond = (self.family_name() == BCM and self.state.family
                        and self.state.family.get("can_check_preconditions"))
         self.precond.setVisible(bool(can_precond))
@@ -888,13 +908,17 @@ class FlashPage(Page):
 
     def _reset_file(self):
         self.path = self.inspection = self.plan = None
+        self.patch_source = self.patch_info = None
         self.loaded_for = None
         self.drop.set_file("Drop a .bin file here, or click to choose", "")
         self.badges.clear()
         self.file_banner.hide()
+        self.patch_label.setText("")
         self._clear_options()
 
-    def load(self, path, converted=False):
+    def load(self, path, converted=False, patched_from=None, patch_info=None):
+        """Check ``path`` and plan its flash. ``patched_from`` is the image it
+        was patched from (the plan diffs against it to pick the blocks)."""
         if self.state.busy:
             return
         if str(path).lower().endswith(".sgo"):
@@ -905,6 +929,15 @@ class FlashPage(Page):
         self.converted = converted
         if not converted:
             self.file_banner.show_message("")
+        self.patch_source = patched_from
+        self.patch_info = patch_info
+        if patched_from:
+            text = f"Patched copy of {Path(patched_from).name}"
+            if patch_info and patch_info.get("summary"):
+                text += f": {patch_info['summary']}"
+            self.patch_label.setText(text + f". Saved as {Path(path).name}.")
+        else:
+            self.patch_label.setText("Apply patches to this image before flashing it.")
         self.path = path
         self.loaded_for = (self.family_name(), self.state.part())
         self.inspection = self.plan = None
@@ -962,7 +995,48 @@ class FlashPage(Page):
             "ecu_version": (self.state.identity or {}).get("sw_version"),
             "correct_checksum": self.correct.isChecked(),
             "simulator_mode": self.simulator.isChecked(),
+            "patched_from": self.patch_source if self.family_name() == EPS else None,
         }, self._planned, self._file_error)
+
+    # --- patching (EPS) ---
+
+    def open_patches(self):
+        """Patch the image on this page. Patches always go onto the original
+        file, so choosing again replaces the earlier choice instead of stacking."""
+        if self.state.busy or not self.path:
+            return
+        source = self.patch_source or self.path
+        self.state.offline("eps_patch_options", {"path": source, "current": self.path},
+                           lambda options: self._choose_patches(source, options),
+                           lambda e: self.file_banner.show_message(self.error_text(e), "error"))
+
+    def _choose_patches(self, source, options):
+        from .patch_dialog import PatchDialog
+        dialog = PatchDialog(options, self)
+        if dialog.exec() != PatchDialog.DialogCode.Accepted:
+            return
+        features, gains = dialog.selection()
+        if not features and gains is None:
+            if self.patch_source:
+                self.file_banner.show_message(f"No patches chosen: back to {Path(source).name}.", "info")
+                self.load(source)
+            return
+        summary = PatchDialog.describe(features, gains)
+        stem = f"{Path(source).stem}_patched_{timestamp()}"
+        out = patched_dir() / f"{stem}{Path(source).suffix}"
+        count = 1
+        while out.exists():  # never overwrite an earlier patched copy
+            count += 1
+            out = patched_dir() / f"{stem}_{count}{Path(source).suffix}"
+
+        def done(result):
+            result["summary"] = summary
+            self.load(result["out"], patched_from=source, patch_info=result)
+
+        self.state.offline("eps_apply_patches", {"path": source, "out": str(out),
+                                                 "features": features, "gains": gains}, done,
+                           lambda e: self.file_banner.show_message(
+                               "Not patched: " + self.error_text(e), "error"))
 
     def _clear_options(self):
         for button in self.option_group.buttons():
@@ -1062,6 +1136,9 @@ class FlashPage(Page):
                  "start": option["start"], "end": option["end"], "status": report.get("status"),
                  "boot_verified": report.get("boot_verified"), "recovery": params["recovery"],
                  "error": result.get("error")}
+        if self.patch_source:
+            entry["patched_from"] = self.patch_source
+            entry["patches"] = {k: (self.patch_info or {}).get(k) for k in ("features", "gains", "summary")}
         if record and report.get("checksum_verified"):
             try:
                 entry["kept_copy"] = record.keep_flashed(self.path)
@@ -1239,8 +1316,9 @@ class PatchesPage(Page):
     def refresh(self):
         family = self.state.family["name"] if self.state.family else None
         self.intro.setText({
-            EPS: "Check which known patches an EPS image has, and apply them. Patching writes a "
-                 "new file; your original is never changed.",
+            EPS: "Check which known patches and HCA gains an EPS image has, and apply them. "
+                 "Patching writes a new file; your original is never changed. The Flash page "
+                 "can also patch the image you're about to flash.",
             HALDEX: "Check the Layer-1 checksums of a Haldex image. The anti-brick patches are "
                     "added automatically when you flash, so there's nothing to apply here.",
         }.get(family, "No offline tools for this module yet."))
@@ -1264,7 +1342,7 @@ class PatchesPage(Page):
         self.drop.set_file(Path(path).name, str(Path(path).parent))
         family = self.state.family["name"]
         if family == EPS:
-            self.state.offline("eps_patch_status", {"path": path}, self._eps_status,
+            self.state.offline("eps_patch_options", {"path": path}, self._eps_status,
                                lambda e: self.banner.show_message(self.error_text(e), "error"))
         else:
             self.state.offline("haldex_checksums", {"path": path}, self._haldex,
@@ -1289,40 +1367,56 @@ class PatchesPage(Page):
                                  "ok" if not bad else "warning")
 
     def _eps_status(self, result):
-        known = result["known_patches"]
-        if not known:
-            self.banner.show_message("No known patch fits this firmware version.", "info")
+        from .patch_dialog import GAIN_PRESETS
+        self.options = result
+        known = {f["manifest"]: f["status"] for f in result["features"]
+                 if f["manifest"] and f["feature"] not in GAIN_PRESETS}
+        if not known and not result.get("gains"):
+            self.banner.show_message("No known patch fits this image.", "info")
+            return
         for name, status in known.items():
             QTreeWidgetItem(self.tree, [name, status])
-        for feature in result["features"]:
-            fits = [s for n, s in known.items() if n.startswith(feature)]
-            if not fits or fits[0] in ("applied",):
-                continue
-            button = QPushButton(f"Apply {feature}…")
-            button.clicked.connect(lambda _=False, f=feature: self.apply(f))
-            self.actions.addWidget(button)
+        speeds = result.get("gain_speeds") or []
+        for mode, row in enumerate(result.get("gains") or []):
+            QTreeWidgetItem(self.tree, [f"HCA gain mode {mode} ({'/'.join(map(str, speeds))} km/h)",
+                                        " / ".join(map(str, row))])
+        button = QPushButton("Choose patches…")
+        button.setObjectName("primary")
+        button.clicked.connect(self.choose)
+        self.actions.addWidget(button)
         self.actions.addStretch(1)
 
-    def apply(self, feature):
+    def choose(self):
+        from .patch_dialog import PatchDialog
+        dialog = PatchDialog(self.options, self)
+        if dialog.exec() != PatchDialog.DialogCode.Accepted:
+            return
+        features, gains = dialog.selection()
+        if not features and gains is None:
+            self.banner.show_message("No patches chosen.", "info")
+            return
         source = Path(self.path)
-        default = str(patched_dir() / f"{source.stem}_{feature}{source.suffix}")
+        default = str(patched_dir() / f"{source.stem}_patched{source.suffix}")
         out, _ = QFileDialog.getSaveFileName(self, "Save patched image", default, "Firmware (*.bin)")
         if not out:
             return
         if Path(out).resolve() == source.resolve():
             self.banner.show_message("Save the patched image as a new file.", "error")
             return
+        summary = PatchDialog.describe(features, gains)
 
         def done(result):
-            self.banner.show_message(f"Saved {Path(result['out']).name}.", "ok")
+            self.banner.show_message(f"Saved {Path(result['out']).name}: {summary}.", "ok")
             self._clear_actions()
             button = QPushButton("Flash this file")
             button.setObjectName("primary")
-            button.clicked.connect(lambda: self.state.open_in_flash.emit(result["out"]))
+            button.clicked.connect(
+                lambda: self.state.open_patched_in_flash.emit(result["out"], str(source)))
             self.actions.addWidget(button)
             self.actions.addStretch(1)
 
-        self.state.offline("eps_patch", {"path": self.path, "feature": feature, "out": out}, done,
+        self.state.offline("eps_apply_patches", {"path": self.path, "out": out,
+                                                 "features": features, "gains": gains}, done,
                            lambda e: self.banner.show_message(self.error_text(e), "error"))
 
 

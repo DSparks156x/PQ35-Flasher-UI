@@ -478,21 +478,36 @@ def _option(family, data, preset, correct_checksum, simulator_mode):
 
 
 def plan_flash(path: str, family: str, reference: str = None, correct_checksum=False,
-               simulator_mode=False, ecu_version=None) -> dict:
+               simulator_mode=False, ecu_version=None, patched_from: str = None) -> dict:
     data = Path(path).read_bytes()
     if family == BCM:
         return _plan_bcm(data, reference)
     if family == EPS:
-        return _plan_eps(data, ecu_version, correct_checksum)
+        source = Path(patched_from).read_bytes() if patched_from and Path(patched_from).is_file() else None
+        return _plan_eps(data, ecu_version, correct_checksum, source)
     return _plan_haldex(data, reference, correct_checksum, simulator_mode)
 
 
-def _plan_eps(data, ecu_version, correct_checksum) -> dict:
+def _patched_blocks(data: bytes, source) -> set:
+    """Blocks the patches in ``data`` live in: from the diff against the image it
+    was patched from when known, else from the patches it has applied."""
+    if source is not None and len(source) == len(data):
+        return set(_changed_blocks(data, source, 0x5E000 if len(data) == 0x1000 else 0))
+    if len(data) != 0x60000:
+        return set()
+    gain_presets = getattr(get_family(EPS).patches(), "GAIN_PRESETS", {})
+    return {0x5E000 if name in gain_presets else 0x5D000
+            for name, status in (known_patches(data) or {}).items() if status == "applied"}
+
+
+def _plan_eps(data, ecu_version, correct_checksum, source=None) -> dict:
     """EPS racks can't be read back, so there is no diff. Which blocks may be
     written depends on the module's firmware:
       0x5E dataset   firmware 3000+, and not the factory placeholder dataset
       0x5D config    firmware 3000+, and only onto the exact version it was built for
       full firmware  modules on 2901 or newer (older upgrades aren't understood yet)
+    Patches pick the block that carries them; ``source`` is the image they were
+    applied to, when the Flash page patched it.
     """
     module = _version(ecu_version)
     firmware = eps_firmware(data)
@@ -550,17 +565,44 @@ def _plan_eps(data, ecu_version, correct_checksum) -> dict:
 
     recommended = next((o for o in options if o["valid"]), None)
     applied = [name for name, status in (known_patches(data) or {}).items() if status == "applied"]
-    config_option = next((o for o in options if o["key"] == "config"), None)
-    if applied and config_option and config_option["valid"]:
-        # A 0x5D patch (e.g. HCA) is only delivered by writing the 0x5D block.
-        recommended = config_option
+    blocks = _patched_blocks(data, source)
+    by_key = {o["key"]: o for o in options}
+    covers = {"dataset": {0x5E000}, "config": {0x5D000}}
+    if blocks:
+        # Patches are only delivered by writing the block that carries them.
+        fits = [o for o in options if o["valid"] and blocks <= covers.get(o["key"], blocks)]
+        if fits:
+            recommended = fits[0]
+        for key, block in covers.items():
+            option = by_key.get(key)
+            missing = sorted(blocks - block)
+            if option and option["valid"] and missing:
+                option["hint"] += (" Leaves out the patched "
+                                   + " and ".join(f"0x{b >> 12:X}" for b in missing)
+                                   + " block: write that too, in a second flash.")
     if recommended is None:
         reason = "Nothing in this image can be written to this module."
+    elif source is not None and not blocks:
+        reason = "The patches didn't change anything in this image."
+    elif blocks and len(blocks) > 1 and recommended["key"] == "full":
+        reason = ("Your patches change both the 0x5D configuration block and the 0x5E dataset. "
+                  "The full firmware writes both in one flash. You can also write the 0x5D block "
+                  "and the 0x5E dataset one after the other.")
+    elif blocks and recommended["key"] == "full":
+        reason = ("The patched " + " and ".join(f"0x{b >> 12:X}" for b in sorted(blocks))
+                  + " block can't be written on its own to this module (see below), so the whole "
+                    "firmware is written.")
+    elif blocks and not blocks <= covers.get(recommended["key"], blocks):
+        reason = ("Your patches change " + " and ".join(f"0x{b >> 12:X}" for b in sorted(blocks))
+                  + f", but {recommended['label']} is the only option this module allows. "
+                  "Check the hints below.")
+    elif recommended["key"] == "dataset" and blocks:
+        reason = "The patches are in the 0x5E dataset, so only the steer dataset is written."
     elif recommended["key"] == "dataset":
         reason = "Only the steer dataset is written. Firmware and configuration stay as they are."
-    elif recommended["key"] == "config" and applied:
-        reason = (f"This image has {', '.join(applied)} applied in its 0x5D block, so that "
-                  "block is written.")
+    elif recommended["key"] == "config" and blocks:
+        reason = ("The patches are in the 0x5D block" + (f" ({', '.join(applied)})" if applied else "")
+                  + ", so that block is written.")
     elif recommended["key"] == "config":
         reason = "Same firmware as the module, so only the 0x5D configuration block is written."
     else:
@@ -617,20 +659,48 @@ def _plan_haldex(data, reference, correct_checksum, simulator_mode) -> dict:
     return plan
 
 
-def eps_patch(path: str, feature: str, out: str) -> dict:
+def eps_patch_options(path: str, current: str = None) -> dict:
+    """What can be patched in ``path``. ``current`` is the image the user has
+    open now (an earlier patch of ``path``); its state preselects the dialog."""
     patches = get_family(EPS).patches()
     data = Path(path).read_bytes()
-    patches.validate_image(data)
-    patched = patches.require_patch_manifest(data, feature).apply(data)
+    result = patches.patch_options(data)
+    firmware = eps_firmware(data)
+    result.update(name=Path(path).name, size=len(data),
+                  firmware={"part": firmware[0], "version": firmware[1]} if firmware else None)
+    now = Path(current).read_bytes() if current and Path(current).is_file() else data
+    result["current"] = {"known_patches": patches.known_patches(now) if len(now) == len(data) else {},
+                         "gains": patches.hca_gains(now) if len(now) == len(data) else None}
+    return result
+
+
+def _changed_blocks(new: bytes, old: bytes, base: int = 0) -> list:
+    """4 KiB blocks (by load address) where ``new`` differs from ``old``. The EPS
+    end marker sits outside every block a partial flash writes, so it is left out."""
+    return sorted({(base + i) & ~0xFFF for i in range(len(new))
+                   if new[i] != old[i] and base + i < EPS_END_MARKER})
+
+
+EPS_END_MARKER = 0x5FFFC
+
+
+def eps_apply_patches(path: str, out: str, features=(), gains=None) -> dict:
+    """Patch ``path`` into a new file ``out``; the source is never changed."""
+    patches = get_family(EPS).patches()
+    data = Path(path).read_bytes()
+    if Path(out).resolve() == Path(path).resolve():
+        raise ValueError("Write the patched image to a new file, not over its source")
+    patched = patches.apply_patches(data, list(features), gains)
+    Path(out).parent.mkdir(parents=True, exist_ok=True)
     Path(out).write_bytes(patched)
-    return {"out": str(Path(out).resolve()), "sha256": hashlib.sha256(patched).hexdigest().upper(),
+    base = 0x5E000 if len(data) == 0x1000 else 0
+    changes = [{"address": base + i, "before": data[i], "after": patched[i]}
+               for i in range(len(data)) if data[i] != patched[i]]
+    return {"out": str(Path(out).resolve()), "source": str(Path(path).resolve()),
+            "sha256": hashlib.sha256(patched).hexdigest().upper(),
+            "features": list(features), "gains": patches.hca_gains(patched),
+            "changes": changes, "blocks": _changed_blocks(patched, data, base),
             "known_patches": patches.known_patches(patched)}
-
-
-def eps_patch_status(path: str) -> dict:
-    patches = get_family(EPS).patches()
-    data = Path(path).read_bytes()
-    return {"features": list(patches.FEATURES), "known_patches": patches.known_patches(data)}
 
 
 def compose_state(path: str, family: str, start: int, end: int, out: str, reference: str = None,

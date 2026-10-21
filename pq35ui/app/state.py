@@ -10,6 +10,7 @@ class AppState(QObject):
     progress = Signal(dict)
     busy_changed = Signal(bool)
     open_in_flash = Signal(str)
+    open_patched_in_flash = Signal(str, str)  # patched image, the image it was patched from
     refresh_interfaces = Signal()
     start_recovery = Signal()
 

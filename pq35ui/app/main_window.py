@@ -136,6 +136,7 @@ class MainWindow(QMainWindow):
         self.state.busy_changed.connect(self._busy_changed)
         self.state.progress.connect(lambda m: self.busy_bar.setValue(int(m.get("percent", 0))))
         self.state.open_in_flash.connect(lambda _path: self.nav.setCurrentRow(2))
+        self.state.open_patched_in_flash.connect(lambda *_: self.nav.setCurrentRow(2))
         self.state.refresh_interfaces.connect(self.refresh_interfaces)
         self.state.start_recovery.connect(lambda: self.nav.setCurrentRow(2))
 
