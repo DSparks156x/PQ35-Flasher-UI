@@ -1,4 +1,4 @@
-"""The disclaimer shown on every start, over a dimmed main window."""
+"""The disclaimer shown on every start, and the patcher warning, over a dimmed main window."""
 from PySide6.QtCore import QEvent, QObject, Qt
 from PySide6.QtWidgets import QDialog, QHBoxLayout, QLabel, QPushButton, QVBoxLayout, QWidget
 
@@ -21,6 +21,16 @@ logs and useful information (exact component information).</p>
 <p><b>Do not Dumb</b>, and have fun.</p>
 """
 
+PATCH_TEXT = """
+<p>The patches here really do what they say they do. <b>That does not make them safe. At all.</b></p>
+
+<p><b>The EPS is faster than you. The EPS is stronger than you.</b> Usually it just cuts EPS
+should you sufficiently piss it off, but <b>it is physically capable of much worse.</b></p>
+
+<p><b>Do not fuck with it without knowing what you are doing.</b> HCA speed/timeout is the
+only "safe" patch here.</p>
+"""
+
 
 class Dimmer(QWidget):
     """Darkens a window while a dialog needs an answer, and follows its size."""
@@ -39,27 +49,28 @@ class Dimmer(QWidget):
 
 
 class Disclaimer(QDialog):
-    def __init__(self, parent=None):
+    def __init__(self, parent=None, title="Before you start", text=TEXT, decline="Quit",
+                 accept="I understand"):
         super().__init__(parent)
-        self.setWindowTitle("Before you start")
+        self.setWindowTitle(title)
         self.setModal(True)
         self.setMinimumWidth(560)
         layout = QVBoxLayout(self)
         layout.setContentsMargins(24, 20, 24, 18)
         layout.setSpacing(14)
-        title = QLabel("Before you start")
-        title.setObjectName("h1")
-        layout.addWidget(title)
-        body = QLabel(TEXT)
+        heading = QLabel(title)
+        heading.setObjectName("h1")
+        layout.addWidget(heading)
+        body = QLabel(text)
         body.setWordWrap(True)
         body.setTextFormat(Qt.TextFormat.RichText)
         body.setStyleSheet("line-height: 140%;")
         layout.addWidget(body)
         row = QHBoxLayout()
         row.addStretch(1)
-        quit_button = QPushButton("Quit")
+        quit_button = QPushButton(decline)
         quit_button.clicked.connect(self.reject)
-        agree = QPushButton("I understand")
+        agree = QPushButton(accept)
         agree.setObjectName("primary")
         agree.clicked.connect(self.accept)
         row.addWidget(quit_button)
@@ -68,12 +79,26 @@ class Disclaimer(QDialog):
         agree.setFocus()
 
 
-def confirm(window) -> bool:
-    """Show the disclaimer over a dimmed window. True if acknowledged."""
+def confirm(window, **dialog) -> bool:
+    """Show the disclaimer (or another one, via Disclaimer's arguments) over a
+    dimmed window. True if acknowledged."""
     dimmer = Dimmer(window)
     dimmer.show()
     dimmer.raise_()
     try:
-        return Disclaimer(window).exec() == QDialog.DialogCode.Accepted
+        return Disclaimer(window, **dialog).exec() == QDialog.DialogCode.Accepted
     finally:
         dimmer.deleteLater()
+
+
+_patch_warning_seen = False
+
+
+def confirm_patching(widget) -> bool:
+    """The patcher warning, once per session, before the patcher first opens."""
+    global _patch_warning_seen
+    if _patch_warning_seen:
+        return True
+    _patch_warning_seen = confirm(widget.window(), title="Before you patch", text=PATCH_TEXT,
+                                  decline="Cancel")
+    return _patch_warning_seen

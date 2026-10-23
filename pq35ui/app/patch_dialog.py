@@ -61,9 +61,7 @@ class PatchDialog(QDialog):
         layout.addWidget(title)
         firmware = options.get("firmware")
         layout.addWidget(muted(
-            f"{options['name']}" + (f" · {firmware['part']} {firmware['version']}" if firmware else "")
-            + ". Patches are applied to this file and saved as a new copy; the file itself is "
-              "never changed."))
+            f"{options['name']}" + (f" · {firmware['part']} {firmware['version']}" if firmware else "")))
 
         current = options.get("current") or {}
         now = current.get("known_patches") or {}
@@ -117,18 +115,53 @@ class PatchDialog(QDialog):
             layout.addWidget(muted("No known patch fits this image."))
 
         row = QHBoxLayout()
+        # Anything past HCA timeout/min speed needs this ticked before Apply.
+        self.sure = QCheckBox("I am sure of what I am doing")
+        self.sure.toggled.connect(lambda *_: self._update_apply())
+        row.addWidget(self.sure)
         row.addStretch(1)
         cancel = QPushButton("Cancel")
         cancel.clicked.connect(self.reject)
         self.apply_button = QPushButton("Apply patches")
         self.apply_button.setObjectName("primary")
         self.apply_button.clicked.connect(self.accept)
-        self.apply_button.setEnabled(bool(config or self.gains or self.trip is not None))
+        self.can_apply = bool(config or self.gains or self.trip is not None)
         row.setContentsMargins(24, 0, 24, 0)
         row.addWidget(cancel)
         row.addWidget(self.apply_button)
         outer.addLayout(row)
+        self._watch_changes()
+        self._update_apply()
         self._size_to_content()
+
+    def _watch_changes(self):
+        for box in self.checks.values():
+            box.toggled.connect(lambda *_: self._update_apply())
+        for group in (self.slew_group, self.gain_mode):
+            if group:
+                group.buttonToggled.connect(lambda *_: self._update_apply())
+        if self.trip_spin is not None:
+            self.trip_spin.valueChanged.connect(lambda *_: self._update_apply())
+        if self.gains:
+            self.same.toggled.connect(lambda *_: self._update_apply())
+            for row in self.spins:
+                for spin in row:
+                    spin.valueChanged.connect(lambda *_: self._update_apply())
+
+    def risky(self):
+        """True when the selection holds anything past HCA timeout/min speed."""
+        selection = self.selection()
+        return (any(f != "hca-timeout-minspeed" for f in selection["features"])
+                or selection["gains"] is not None or selection["torque_trip"] is not None)
+
+    def _update_apply(self):
+        risky = self.risky()
+        if not risky and self.sure.isChecked():
+            self.sure.blockSignals(True)
+            self.sure.setChecked(False)  # a later risky change needs a fresh tick
+            self.sure.blockSignals(False)
+        self.sure.setVisible(risky)
+        self.apply_button.setEnabled(self.can_apply and (not risky or self.sure.isChecked()))
 
     def _size_to_content(self):
         """Size to the content, up to 90% of the screen's height (then it scrolls)."""
@@ -166,26 +199,22 @@ class PatchDialog(QDialog):
         row.addWidget(self.trip_spin)
         row.addWidget(muted(f"image: {self.trip:.2f} Nm"), 1)
         card.add(row)
-        card.add(muted(
-            "The float at 0x5D09C (stock 3.8). The rack's monitor trips when the applied "
-            "|HCA + DSR| / 68 exceeds it, and tripping latches a fault until the power is cycled. "
-            "Only that word changes."))
+        card.add(muted("Post HCA gain torque limit. Exceeding it trips the watchdog."))
 
     def _build_gains(self, layout, current):
         card = Card("HCA gain (0x5E dataset)")
         layout.addWidget(card)
-        maximum = self.options.get("gain_max", 160)
+        maximum = self.options.get("gain_max", 255)
         speeds = self.options.get("gain_speeds") or [0, 50, 120]
         source = self.gains
-        card.add(muted(
-            f"HCA torque is scaled by these gains at {', '.join(str(s) for s in speeds)} km/h, "
-            "linearly in between (128 = 1.0×). They only affect HCA. The rack uses one of the "
-            "three modes; which one isn't mapped yet, so set all three unless you know."))
+        card.add(muted("128 = 1.0×."))
         self.gain_mode = QButtonGroup(self)
         self.gain_mode.buttonToggled.connect(lambda *_: self._gain_mode_changed())
         self.gain_buttons = {"keep": QRadioButton(f"Keep the image's gains ({_gain_text(source)})")}
         for key, value in GAIN_PRESETS.items():
-            self.gain_buttons[key] = QRadioButton(f"All {value} ({_q7(value)})")
+            stock_max = self.options.get("gain_max_stock_trip", 160)
+            note = " · max with 3.8 Nm HCA torque trip" if value == stock_max else ""
+            self.gain_buttons[key] = QRadioButton(f"All {value} ({_q7(value)}){note}")
         self.gain_buttons["custom"] = QRadioButton("Custom")
         for button in self.gain_buttons.values():
             self.gain_mode.addButton(button)
@@ -218,10 +247,6 @@ class PatchDialog(QDialog):
         # Keep the rows apart when the dialog is short and the body scrolls.
         self.custom.setMinimumHeight(self.custom.minimumSizeHint().height())
         card.add(self.custom)
-        card.add(muted(
-            f"Capped at {maximum}: at the largest HCA input, {maximum} reaches 3.75 Nm, just under "
-            "the rack's 3.8 Nm torque monitor. Tripping that monitor latches a fault until the "
-            "power is cycled."))
 
         if current == source:
             self.gain_buttons["keep"].setChecked(True)
@@ -259,7 +284,7 @@ class PatchDialog(QDialog):
                 features.append(chosen)
         gains = None
         if self.gain_mode:
-            checked = next(k for k, b in self.gain_buttons.items() if b.isChecked())
+            checked = next((k for k, b in self.gain_buttons.items() if b.isChecked()), "keep")
             if checked in GAIN_PRESETS:
                 features.append(checked)
             elif checked == "custom":

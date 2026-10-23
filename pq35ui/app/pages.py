@@ -1006,6 +1006,9 @@ class FlashPage(Page):
         file, so choosing again replaces the earlier choice instead of stacking."""
         if self.state.busy or not self.path:
             return
+        from .disclaimer import confirm_patching
+        if not confirm_patching(self):
+            return
         source = self.patch_source or self.path
         self.state.offline("eps_patch_options", {"path": source, "current": self.path},
                            lambda options: self._choose_patches(source, options),
@@ -1390,7 +1393,10 @@ class PatchesPage(Page):
         self.actions.addStretch(1)
 
     def choose(self):
+        from .disclaimer import confirm_patching
         from .patch_dialog import PatchDialog
+        if not confirm_patching(self):
+            return
         dialog = PatchDialog(self.options, self)
         if dialog.exec() != PatchDialog.DialogCode.Accepted:
             return
