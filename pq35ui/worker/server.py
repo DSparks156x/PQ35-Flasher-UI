@@ -273,7 +273,8 @@ class Server:
         if method == "eps_apply_patches":
             from . import images
             return images.eps_apply_patches(params["path"], params["out"],
-                                            params.get("features") or (), params.get("gains"))
+                                            params.get("features") or (), params.get("gains"),
+                                            params.get("torque_trip"))
         if method == "compose_state":
             from . import images
             return images.compose_state(params["path"], params["family"], params["start"],

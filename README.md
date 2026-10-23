@@ -123,7 +123,8 @@ PySide6 UI (64-bit)  ──JSON lines──▶  worker  ──▶  flasher (subm
   - A full flash of a factory image with the `000` placeholder dataset prompts you to
     flash a real dataset straight after.
   - **Patch…** on the Flash page patches the chosen image before you flash it. The
-    choices are HCA timeout/minimum speed, slew and HCA gains, whichever fit its firmware.
+    choices are HCA timeout/minimum speed, slew, the HCA torque trip and HCA gains,
+    whichever fit its firmware.
     The patched copy goes in `Patched` and the chosen file never changes. Patching again
     starts from the original, so it replaces the earlier choice. The default write is the
     block the patches changed. When they change both 0x5D and 0x5E, write the two

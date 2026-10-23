@@ -6,7 +6,7 @@ The dialog only collects a selection; the caller applies it to the source image
 from PySide6.QtCore import QTimer
 from PySide6.QtWidgets import (
     QButtonGroup, QCheckBox, QDialog, QFrame, QGridLayout, QHBoxLayout, QLabel, QPushButton,
-    QRadioButton, QScrollArea, QSpinBox, QVBoxLayout, QWidget,
+    QDoubleSpinBox, QRadioButton, QScrollArea, QSpinBox, QVBoxLayout, QWidget,
 )
 
 from .widgets import Card, muted
@@ -72,7 +72,9 @@ class PatchDialog(QDialog):
         self.slew_buttons = {}
         config = [f for f in options["features"]
                   if f["feature"] not in GAIN_PRESETS and f["manifest"]]
-        if config:
+        self.trip = options.get("torque_trip")
+        self.trip_spin = None
+        if config or self.trip is not None:
             card = Card("0x5D configuration")
             layout.addWidget(card)
             groups = {}
@@ -105,11 +107,13 @@ class PatchDialog(QDialog):
                         button.setEnabled(False)
                 elif not any(b.isChecked() for f, b in self.slew_buttons.items() if f):
                     none.setChecked(True)
+            if self.trip is not None:
+                self._build_trip(card, current.get("torque_trip") or self.trip)
         self.gains = options.get("gains")
         self.gain_mode = None
         if self.gains:
             self._build_gains(layout, current.get("gains") or self.gains)
-        if not config and not self.gains:
+        if not config and not self.gains and self.trip is None:
             layout.addWidget(muted("No known patch fits this image."))
 
         row = QHBoxLayout()
@@ -119,7 +123,7 @@ class PatchDialog(QDialog):
         self.apply_button = QPushButton("Apply patches")
         self.apply_button.setObjectName("primary")
         self.apply_button.clicked.connect(self.accept)
-        self.apply_button.setEnabled(bool(config or self.gains))
+        self.apply_button.setEnabled(bool(config or self.gains or self.trip is not None))
         row.setContentsMargins(24, 0, 24, 0)
         row.addWidget(cancel)
         row.addWidget(self.apply_button)
@@ -148,6 +152,24 @@ class PatchDialog(QDialog):
             button.setToolTip("This image's bytes don't match the patch's stock values.")
         else:
             button.setChecked(now.get(feature["manifest"]) == "applied")
+
+    def _build_trip(self, card, current):
+        low, high = self.options.get("torque_trip_range") or (0.1, 20.0)
+        row = QHBoxLayout()
+        row.addWidget(QLabel("HCA torque trip"))
+        self.trip_spin = QDoubleSpinBox()
+        self.trip_spin.setRange(low, high)
+        self.trip_spin.setDecimals(2)
+        self.trip_spin.setSingleStep(0.1)
+        self.trip_spin.setSuffix(" Nm")
+        self.trip_spin.setValue(current)
+        row.addWidget(self.trip_spin)
+        row.addWidget(muted(f"image: {self.trip:.2f} Nm"), 1)
+        card.add(row)
+        card.add(muted(
+            "The float at 0x5D09C (stock 3.8). The rack's monitor trips when the applied "
+            "|HCA + DSR| / 68 exceeds it, and tripping latches a fault until the power is cycled. "
+            "Only that word changes."))
 
     def _build_gains(self, layout, current):
         card = Card("HCA gain (0x5E dataset)")
@@ -228,8 +250,8 @@ class PatchDialog(QDialog):
         QTimer.singleShot(0, self._size_to_content)
 
     def selection(self):
-        """(features, gains): the patches to apply to the source image. gains is
-        None when the image's own gains are kept."""
+        """The patches to apply to the source image, as eps_apply_patches params:
+        features, gains (None keeps the image's own) and torque_trip (None keeps it)."""
         features = [f for f, box in self.checks.items() if box.isEnabled() and box.isChecked()]
         if self.slew_group:
             chosen = next((f for f, b in self.slew_buttons.items() if b.isChecked()), None)
@@ -244,13 +266,23 @@ class PatchDialog(QDialog):
                 gains = [[spin.value() for spin in row] for row in self.spins]
                 if gains == self.gains:
                     gains = None
-        return features, gains
+        trip = None
+        if self.trip_spin is not None and abs(self.trip_spin.value() - self.trip) > 0.005:
+            trip = self.trip_spin.value()
+        return {"features": features, "gains": gains, "torque_trip": trip}
 
     @staticmethod
-    def describe(features, gains):
-        """A short summary of a selection, for banners and file names."""
+    def empty(selection):
+        return not selection["features"] and selection["gains"] is None and selection["torque_trip"] is None
+
+    @staticmethod
+    def describe(selection):
+        """A short summary of a selection, for banners."""
+        features, gains, trip = selection["features"], selection["gains"], selection["torque_trip"]
         parts = [TITLES.get(f, f).split(":")[0] for f in features if f not in GAIN_PRESETS]
         parts += [f"HCA gain {GAIN_PRESETS[f]}" for f in features if f in GAIN_PRESETS]
         if gains:
             parts.append(f"HCA gains {_gain_text(gains)}")
+        if trip is not None:
+            parts.append(f"HCA torque trip {trip:.2f} Nm")
         return ", ".join(parts)

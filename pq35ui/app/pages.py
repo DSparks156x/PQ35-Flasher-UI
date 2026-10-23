@@ -1016,13 +1016,13 @@ class FlashPage(Page):
         dialog = PatchDialog(options, self)
         if dialog.exec() != PatchDialog.DialogCode.Accepted:
             return
-        features, gains = dialog.selection()
-        if not features and gains is None:
+        selection = dialog.selection()
+        if PatchDialog.empty(selection):
             if self.patch_source:
                 self.file_banner.show_message(f"No patches chosen: back to {Path(source).name}.", "info")
                 self.load(source)
             return
-        summary = PatchDialog.describe(features, gains)
+        summary = PatchDialog.describe(selection)
         stem = f"{Path(source).stem}_patched_{timestamp()}"
         out = patched_dir() / f"{stem}{Path(source).suffix}"
         count = 1
@@ -1034,8 +1034,7 @@ class FlashPage(Page):
             result["summary"] = summary
             self.load(result["out"], patched_from=source, patch_info=result)
 
-        self.state.offline("eps_apply_patches", {"path": source, "out": str(out),
-                                                 "features": features, "gains": gains}, done,
+        self.state.offline("eps_apply_patches", {"path": source, "out": str(out), **selection}, done,
                            lambda e: self.file_banner.show_message(
                                "Not patched: " + self.error_text(e), "error"))
 
@@ -1139,7 +1138,8 @@ class FlashPage(Page):
                  "error": result.get("error")}
         if self.patch_source:
             entry["patched_from"] = self.patch_source
-            entry["patches"] = {k: (self.patch_info or {}).get(k) for k in ("features", "gains", "summary")}
+            entry["patches"] = {k: (self.patch_info or {}).get(k)
+                                for k in ("features", "gains", "torque_trip", "summary")}
         if record and report.get("checksum_verified"):
             try:
                 entry["kept_copy"] = record.keep_flashed(self.path)
@@ -1372,7 +1372,7 @@ class PatchesPage(Page):
         self.options = result
         known = {f["manifest"]: f["status"] for f in result["features"]
                  if f["manifest"] and f["feature"] not in GAIN_PRESETS}
-        if not known and not result.get("gains"):
+        if not known and not result.get("gains") and result.get("torque_trip") is None:
             self.banner.show_message("No known patch fits this image.", "info")
             return
         for name, status in known.items():
@@ -1381,6 +1381,8 @@ class PatchesPage(Page):
         for mode, row in enumerate(result.get("gains") or []):
             QTreeWidgetItem(self.tree, [f"HCA gain mode {mode} ({'/'.join(map(str, speeds))} km/h)",
                                         " / ".join(map(str, row))])
+        if result.get("torque_trip") is not None:
+            QTreeWidgetItem(self.tree, ["HCA torque trip (0x5D09C)", f"{result['torque_trip']:.2f} Nm"])
         button = QPushButton("Choose patches…")
         button.setObjectName("primary")
         button.clicked.connect(self.choose)
@@ -1392,8 +1394,8 @@ class PatchesPage(Page):
         dialog = PatchDialog(self.options, self)
         if dialog.exec() != PatchDialog.DialogCode.Accepted:
             return
-        features, gains = dialog.selection()
-        if not features and gains is None:
+        selection = dialog.selection()
+        if PatchDialog.empty(selection):
             self.banner.show_message("No patches chosen.", "info")
             return
         source = Path(self.path)
@@ -1404,7 +1406,7 @@ class PatchesPage(Page):
         if Path(out).resolve() == source.resolve():
             self.banner.show_message("Save the patched image as a new file.", "error")
             return
-        summary = PatchDialog.describe(features, gains)
+        summary = PatchDialog.describe(selection)
 
         def done(result):
             self.banner.show_message(f"Saved {Path(result['out']).name}: {summary}.", "ok")
@@ -1416,8 +1418,7 @@ class PatchesPage(Page):
             self.actions.addWidget(button)
             self.actions.addStretch(1)
 
-        self.state.offline("eps_apply_patches", {"path": self.path, "out": out,
-                                                 "features": features, "gains": gains}, done,
+        self.state.offline("eps_apply_patches", {"path": self.path, "out": out, **selection}, done,
                            lambda e: self.banner.show_message(self.error_text(e), "error"))
 
 

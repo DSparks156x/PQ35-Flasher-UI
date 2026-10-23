@@ -677,8 +677,11 @@ def eps_patch_options(path: str, current: str = None) -> dict:
     result.update(name=Path(path).name, size=len(data),
                   firmware={"part": firmware[0], "version": firmware[1]} if firmware else None)
     now = Path(current).read_bytes() if current and Path(current).is_file() else data
-    result["current"] = {"known_patches": patches.known_patches(now) if len(now) == len(data) else {},
-                         "gains": patches.hca_gains(now) if len(now) == len(data) else None}
+    same = len(now) == len(data)
+    trip = getattr(patches, "hca_torque_trip", lambda _: None)
+    result["current"] = {"known_patches": patches.known_patches(now) if same else {},
+                         "gains": patches.hca_gains(now) if same else None,
+                         "torque_trip": trip(now) if same else None}
     return result
 
 
@@ -692,13 +695,14 @@ def _changed_blocks(new: bytes, old: bytes, base: int = 0) -> list:
 EPS_END_MARKER = 0x5FFFC
 
 
-def eps_apply_patches(path: str, out: str, features=(), gains=None) -> dict:
+def eps_apply_patches(path: str, out: str, features=(), gains=None, torque_trip=None) -> dict:
     """Patch ``path`` into a new file ``out``; the source is never changed."""
     patches = get_family(EPS).patches()
     data = Path(path).read_bytes()
     if Path(out).resolve() == Path(path).resolve():
         raise ValueError("Write the patched image to a new file, not over its source")
-    patched = patches.apply_patches(data, list(features), gains)
+    extra = {"torque_trip": torque_trip} if torque_trip is not None else {}
+    patched = patches.apply_patches(data, list(features), gains, **extra)
     Path(out).parent.mkdir(parents=True, exist_ok=True)
     Path(out).write_bytes(patched)
     base = 0x5E000 if len(data) == 0x1000 else 0
@@ -706,7 +710,7 @@ def eps_apply_patches(path: str, out: str, features=(), gains=None) -> dict:
                for i in range(len(data)) if data[i] != patched[i]]
     return {"out": str(Path(out).resolve()), "source": str(Path(path).resolve()),
             "sha256": hashlib.sha256(patched).hexdigest().upper(),
-            "features": list(features), "gains": patches.hca_gains(patched),
+            "features": list(features), "gains": patches.hca_gains(patched), "torque_trip": torque_trip,
             "changes": changes, "blocks": _changed_blocks(patched, data, base),
             "known_patches": patches.known_patches(patched)}
 
