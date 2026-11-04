@@ -26,7 +26,10 @@ NAV = (
     ("patches", "Patches", pages.PatchesPage),
     ("diagnostics", "Diagnostics", pages.DiagnosticsPage),
     ("logger", "Data logger", LoggerPage),
-    ("log", "Log", pages.LogPage),
+)
+# Kept apart at the bottom of the sidebar, away from the work tabs.
+BOTTOM_NAV = (
+    ("log", "Flasher Logs", pages.LogPage),
 )
 
 
@@ -90,6 +93,9 @@ class MainWindow(QMainWindow):
         self.nav = QListWidget()
         self.nav.setObjectName("navlist")
         nav_layout.addWidget(self.nav)
+        self.nav_bottom = QListWidget()
+        self.nav_bottom.setObjectName("navlist")
+        nav_layout.addWidget(self.nav_bottom)
         footer = QVBoxLayout()
         footer.setContentsMargins(12, 0, 10, 0)
         footer.setSpacing(4)
@@ -123,7 +129,17 @@ class MainWindow(QMainWindow):
             item = QListWidgetItem(label)
             item.setData(Qt.ItemDataRole.UserRole, key)
             self.nav.addItem(item)
-        self.nav.currentRowChanged.connect(self.stack.setCurrentIndex)
+        for key, label, cls in BOTTOM_NAV:
+            page = cls(self.state)
+            self.pages[key] = page
+            self.stack.addWidget(page)
+            item = QListWidgetItem(label)
+            item.setData(Qt.ItemDataRole.UserRole, key)
+            self.nav_bottom.addItem(item)
+        rows = self.nav_bottom.count()
+        self.nav_bottom.setFixedHeight(rows * (self.nav_bottom.sizeHintForRow(0) + 4) + 8)
+        self.nav.currentRowChanged.connect(self._main_nav_changed)
+        self.nav_bottom.currentRowChanged.connect(self._bottom_nav_changed)
         self.nav.setCurrentRow(0)
         body.addWidget(self.stack, 1)
         outer.addLayout(body, 1)
@@ -152,6 +168,17 @@ class MainWindow(QMainWindow):
         self.rescan.setInterval(4000)
         self.rescan.timeout.connect(self._auto_refresh)
         self.rescan.start()
+
+    def _main_nav_changed(self, row):
+        if row >= 0:
+            self.stack.setCurrentIndex(row)
+            self.nav_bottom.setCurrentRow(-1)
+
+    def _bottom_nav_changed(self, row):
+        if row >= 0:
+            item = self.nav_bottom.item(row)
+            self.stack.setCurrentWidget(self.pages[item.data(Qt.ItemDataRole.UserRole)])
+            self.nav.setCurrentRow(-1)
 
     # --- top bar ---
 
@@ -278,16 +305,17 @@ class MainWindow(QMainWindow):
                  or "pageff" in state.family["operations"] or state.family.get("has_dtc", False)),
             "logger": has_family and state.family.get("can_log", False),
         }
-        backup_item = self.nav.item(1)
-        no_backup = has_family and state.family["name"] not in pages.BACKUP_FAMILIES
-        backup_item.setText(("Back up (not for EPS)" if state.family["name"] == pages.EPS
-                             else "Back up (not available)") if no_backup else "Back up")
+        # Back up only exists for modules that can be backed up.
+        self.nav.item(1).setHidden(not (has_family and state.family["name"] in pages.BACKUP_CAPABLE))
         for row in range(self.nav.count()):
             item = self.nav.item(row)
             on = enabled[item.data(Qt.ItemDataRole.UserRole)]
             flags = item.flags()
             item.setFlags(flags | Qt.ItemFlag.ItemIsEnabled if on else flags & ~Qt.ItemFlag.ItemIsEnabled)
-        if not self.nav.currentItem() or not (self.nav.currentItem().flags() & Qt.ItemFlag.ItemIsEnabled):
+        current = self.nav.currentItem()
+        on_bottom = self.nav_bottom.currentRow() >= 0
+        if not on_bottom and (current is None or current.isHidden()
+                              or not current.flags() & Qt.ItemFlag.ItemIsEnabled):
             self.nav.setCurrentRow(0)
 
     # --- updates ---
@@ -358,6 +386,7 @@ class MainWindow(QMainWindow):
         for widget in (self.interface_button, self.status):
             widget.setEnabled(not busy)
         self.nav.setEnabled(not busy)
+        self.nav_bottom.setEnabled(not busy)
         self.busy_bar.setVisible(busy)
         self.busy_bar.setValue(0)
         if busy:

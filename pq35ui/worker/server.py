@@ -406,8 +406,8 @@ class Server:
             from .scan import scan
             self.lock.acquire()
             try:
-                return {"operation": "scan", "exit_code": 0,
-                        "result": scan(adapter, self.progress, runner.open_adapter)}
+                results, gateway = scan(adapter, self.progress, runner.open_adapter)
+                return {"operation": "scan", "exit_code": 0, "result": results, "gateway": gateway}
             finally:
                 self.lock.release()
         argv = ["--module", params["module"], "--adapter", adapter["adapter"]]

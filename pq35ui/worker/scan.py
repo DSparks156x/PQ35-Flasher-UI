@@ -1,8 +1,12 @@
 """Ask every known module ID whether something answers, and what it is.
 
-Read-only: opens a TP2 channel per module, reads the 0x9B/0x9C
-identification, closes the channel. Anything that opens a channel is
-reported, even when it can't be identified or isn't what we expect there.
+Read-only: first asks the gateway (TP2 0x1F) for its installation list, which
+maps workshop addresses to TP2 IDs (AWD 22 -> 0x0A); then opens a TP2 channel
+per supported module, reads the 0x9B/0x9C identification and closes it.
+Every supported module is probed even if the gateway doesn't list it: the
+list is the gateway's coding, not a presence check. Anything that opens a
+channel is reported, even when it can't be identified or isn't what we
+expect there.
 """
 import argparse
 import logging
@@ -33,7 +37,46 @@ def _real_application(info) -> bool:
     return bool(re.fullmatch(r"[0-9][A-Z0-9]{2}[0-9]{6}[A-Z]{0,3}", part)) and bool(version)
 
 
-def scan(adapter: dict, progress, open_adapter) -> list:
+def read_gateway(device, log) -> dict:
+    """The gateway's installation list, or why there isn't one (bench, no gateway)."""
+    try:
+        from flasher.vag_protocols.installation_list import GATEWAY_ID, read_installation_list
+        from flasher.vag_protocols.kwp import KWPNegativeResponse
+    except ImportError:  # older flasher submodule
+        return {"available": False, "entries": [], "error": "not supported by this flasher build"}
+    try:
+        tp = TP20Transport(device, module=GATEWAY_ID, timeout=1.0, log_fn=log)
+    except Exception as exc:
+        return {"available": False, "entries": [], "error": f"no gateway answered ({exc})"}
+    try:
+        kwp = KWPClient(tp, log_fn=log)
+        try:
+            entries = read_installation_list(kwp)
+        except KWPNegativeResponse:
+            kwp.session(0x89)
+            entries = read_installation_list(kwp)
+        return {"available": True, "entries": entries}
+    except Exception as exc:
+        return {"available": False, "entries": [], "error": f"{type(exc).__name__}: {exc}"}
+    finally:
+        try:
+            tp.disconnect()
+        except Exception:
+            pass
+
+
+def annotate(results, gateway):
+    """Workshop address per module, and whether the gateway lists it at all."""
+    by_tp2 = {e["tp2"]: e for e in gateway.get("entries") or ()}
+    for entry in results:
+        workshop = by_tp2.get(entry["module"])
+        entry["workshop"] = workshop
+        entry["in_gateway"] = bool(workshop) if gateway.get("available") else None
+    return results
+
+
+def scan(adapter: dict, progress, open_adapter):
+    """(module results, gateway installation list)."""
     args = argparse.Namespace(
         adapter=adapter["adapter"], dll=adapter.get("dll"), channel=adapter.get("channel"),
         serial=adapter.get("serial"), bus=int(adapter.get("bus") or 0),
@@ -42,6 +85,8 @@ def scan(adapter: dict, progress, open_adapter) -> list:
     results = []
     device = open_adapter(args)
     try:
+        progress("SCAN", 0, "Asking the gateway what's installed")
+        gateway = read_gateway(device, log)
         for index, family in enumerate(FAMILIES):
             progress("SCAN", 100 * index / len(FAMILIES),
                      f"Looking for {family.name} at 0x{family.module:02X}")
@@ -94,4 +139,4 @@ def scan(adapter: dict, progress, open_adapter) -> list:
         progress("SCAN", 100, "Done")
     finally:
         device.close()
-    return results
+    return annotate(results, gateway), gateway

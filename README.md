@@ -76,7 +76,13 @@ button on the Connect page. It runs `ip link set … up type can bitrate 500000`
 
 ## Data logger and fault codes
 
-**Find modules** also finds the engine (0x01) and transmission/TCU (0x02). They're read-only
+**Find modules** first asks the gateway for its installation list, so each module shows
+its workshop address next to the TP2 ID it answers on (AWD 22 is TP2 0x0A), and the
+gateway's other modules are listed underneath. Every supported module is still probed
+even if the gateway doesn't list it, since the list is the gateway's coding rather than
+a live check. On a bench with no gateway, it just probes.
+
+It also finds the engine (0x01) and transmission/TCU (0x02). They're read-only
 here: no flashing or backups. Their Diagnostics page reads fault codes, and clears them after
 asking (clearing is the one write). Codes show as the 5-digit VAG code, with the P-code
 where there is one, and the raw status byte.

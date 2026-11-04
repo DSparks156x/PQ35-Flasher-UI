@@ -114,7 +114,9 @@ class ModuleCard(Card):
         title = QLabel(family["label"])
         title.setStyleSheet("font-weight: 600;")
         head.addWidget(title)
-        head.addWidget(muted(f"0x{family['module']:02X}"))
+        self.address = muted(f"TP2 0x{family['module']:02X}")
+        self.address.setWordWrap(False)
+        head.addWidget(self.address)
         head.addStretch(1)
         self.badge = Badge("", "idle")
         head.addWidget(self.badge)
@@ -165,6 +167,11 @@ class ModuleCard(Card):
                       f"({found.get('system_desc', '')}), not a {self.family['label']}.")
         else:
             detail = "Picked by hand. Press Identify to check it's there."
+        workshop = (entry or {}).get("workshop")
+        tp2 = f"TP2 0x{self.family['module']:02X}"
+        self.address.setText(f"address {workshop['address_text']} · {tp2}" if workshop else tp2)
+        if (entry or {}).get("in_gateway") is False and status not in (None, "absent"):
+            detail = (detail + " " if detail else "") + "Not in the gateway's installation list."
         self.detail.setText(detail)
         self.detail.setVisible(bool(detail))
 
@@ -228,6 +235,9 @@ class ConnectPage(Page):
         holder.setLayout(self.cards_box)
         self.add(holder)
         self.absent = self.add(muted(""))
+        self.others = self.add(muted(""))
+        self.others.setWordWrap(True)
+        self.gateway = None
         self.banner = self.add(Banner())
         self.next_hint = self.add(Banner())
         self.finish()
@@ -264,11 +274,32 @@ class ConnectPage(Page):
         for _, _, card in sorted(shown, key=lambda item: (item[0], item[1])):
             self.cards_box.removeWidget(card)
             self.cards_box.addWidget(card)
-        missing = [self.cards[n].family for n, e in self.scan_results.items()
+        missing = [(self.cards[n].family, e.get("workshop")) for n, e in self.scan_results.items()
                    if e["status"] == "absent" and n != selected]
         self.absent.setText("Not found: " + ", ".join(
-            f"{f['label']} (0x{f['module']:02X})" for f in missing) if missing else "")
+            f"{f['label']} ({'address ' + w['address_text'] + ', ' if w else ''}TP2 0x{f['module']:02X})"
+            for f, w in missing) if missing else "")
         self.absent.setVisible(bool(missing))
+        self._show_gateway()
+
+    def _show_gateway(self):
+        """Other modules the gateway lists, so you can see what's in the car."""
+        gateway = self.gateway
+        if not gateway:
+            self.others.hide()
+            return
+        if not gateway.get("available"):
+            self.others.setText("No gateway installation list (no gateway answered, e.g. on a "
+                                "bench), so workshop addresses aren't shown.")
+            self.others.show()
+            return
+        supported = {f["module"] for f in self.state.families}
+        rest = [e for e in gateway.get("entries") or ()
+                if e["tp2"] not in supported and e["address"] != 0x19]
+        self.others.setText("Also in the gateway's installation list (not supported here): "
+                            + ", ".join(f"{e['address_text']} {e['name']}" for e in rest)
+                            if rest else "")
+        self.others.setVisible(bool(rest))
 
     def choose(self, family, entry):
         identity = (entry or {}).get("identity") if (entry or {}).get("status") == "ok" else None
@@ -289,6 +320,7 @@ class ConnectPage(Page):
                 self.scan_banner.show_message("The scan stopped: " + str(result["error"]), "error")
                 return
             self.scan_results = {e["family"]: e for e in entries}
+            self.gateway = result.get("gateway")
             found = [e for e in entries if e["status"] == "ok"]
             stuck = [e for e in entries if e["status"] in ("bootloader", "responding")]
             current = (self.state.family["name"] if self.state.family
@@ -1638,7 +1670,7 @@ class DiagnosticsPage(Page):
 
 
 class LogPage(Page):
-    title = "Log"
+    title = "Flasher Logs"
 
     def __init__(self, state, parent=None):
         super().__init__(state, parent)

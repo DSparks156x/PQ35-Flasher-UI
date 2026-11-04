@@ -163,6 +163,19 @@ class DemoModule:
         self.server.progress("SCAN", 100, "Done")
         return results
 
+    @staticmethod
+    def _gateway():
+        """A pretend installation list: [workshop address, TP2 ID, coded]."""
+        try:
+            from flasher.vag_protocols.installation_list import WORKSHOP_NAMES
+        except ImportError:
+            return {"available": False, "entries": [], "error": "not supported by this flasher build"}
+        rows = ((0x01, 0x01), (0x02, 0x02), (0x03, 0x03), (0x09, 0x20), (0x15, 0x15),
+                (0x17, 0x17), (0x19, 0x1F), (0x22, 0x0A), (0x44, 0x09), (0x56, 0x56))
+        return {"available": True, "entries": [
+            {"address": a, "address_text": f"{a:02X}", "tp2": tp2, "bus": 0, "status": 1,
+             "coded": True, "name": WORKSHOP_NAMES.get(a, f"Address {a:02X}")} for a, tp2 in rows]}
+
     # --- live logging and fault codes ---
 
     def _catalog(self, module):
@@ -241,7 +254,10 @@ class DemoModule:
     def run(self, params) -> dict:
         if params["operation"] == "scan":
             self.log("DEMO scan: no CAN traffic")
-            return {"operation": "scan", "exit_code": 0, "demo": True, "result": self.scan()}
+            gateway = self._gateway()
+            from .scan import annotate
+            return {"operation": "scan", "exit_code": 0, "demo": True,
+                    "result": annotate(self.scan(), gateway), "gateway": gateway}
         family = family_for_module(parse_module(params["module"])).name
         operation = params["operation"]
         started = time.monotonic()
