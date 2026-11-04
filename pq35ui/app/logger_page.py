@@ -261,6 +261,19 @@ class LoggerPage(Page):
         if key and self.catalog:
             self.state.settings.set(key, {"values": sorted(v["id"] for v in values),
                                           "raw_groups": sorted(self.raw_groups)})
+        if not self.running:
+            self._preview(values)
+
+    def _preview(self, values):
+        """Show what will be logged (value, unit, group) before Start; readings stay "–"."""
+        self.rows = {}
+        self.latest = {}
+        self.table.setRowCount(0)
+        for value in values:
+            self._add_row(f"{value['group']}.{value['field']}", value["name"], value["unit"])
+        for group in sorted(self.raw_groups):
+            # One placeholder per raw group; its fields become rows on the first read.
+            self._add_row(f"raw:{group}", f"Group {group}, all fields", "", str(group))
 
     # --- running ---
 
@@ -277,11 +290,7 @@ class LoggerPage(Page):
             self.banner.show_message("Tick at least one value, or add a group.", "warning")
             return
         self.columns = [(f"{v['group']}.{v['field']}", v["name"]) for v in values]
-        self.rows = {}
-        self.latest = {}
-        self.table.setRowCount(0)
-        for key, name in self.columns:
-            self._add_row(key, name)
+        self._preview(values)
         module = self.state.family
         path = datalogs_dir() / f"{module['name']}_{timestamp()}.csv"
         self.writer = DatazapWriter(path, self.columns, groups)
@@ -301,12 +310,19 @@ class LoggerPage(Page):
         self.start_button.setText("Stopping…")
         self.state.stop()
 
-    def _add_row(self, key, name):
+    def _add_row(self, key, name, unit="", where=None):
         row = self.table.rowCount()
         self.table.insertRow(row)
-        for column, text in enumerate((name, "–", "", key)):
+        for column, text in enumerate((name, "–", unit, where or key)):
             self.table.setItem(row, column, QTableWidgetItem(text))
         self.rows[key] = row
+
+    def _remove_row(self, key):
+        row = self.rows.pop(key, None)
+        if row is None:
+            return
+        self.table.removeRow(row)
+        self.rows = {k: (r - 1 if r > row else r) for k, r in self.rows.items()}
 
     def on_sample(self, sample):
         if not self.running:
@@ -322,6 +338,7 @@ class LoggerPage(Page):
             if group in self.raw_groups and key not in self.rows and self.writer.writer is None:
                 # Raw groups get a column per field, named once their first read arrives
                 # (always before the CSV header, which waits for every group).
+                self._remove_row(f"raw:{group}")
                 self.columns.append((key, f"Group {group} field {field['index']}"))
                 self._add_row(key, self.columns[-1][1])
             if key in self.rows:
