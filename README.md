@@ -34,8 +34,10 @@ any Python you already have. It then asks whether to add shortcuts: Start menu a
 desktop on Windows, app menu and desktop on Linux, Applications folder on macOS.
 Set `PQ35_YES=1` to answer yes to everything. Run the installer again to update.
 
-Without shortcuts, start it with `run.cmd` (Windows) or `pq35-flasher` (Linux/macOS)
-in the install folder:
+From a terminal on Linux/macOS, run `pq35-flasher` (add `--demo` for demo mode). The
+installer links it into `~/.local/bin`. On Windows, run `run.cmd` in the install folder.
+The app itself lives in the `app` folder inside the install folder; `uv run -m pq35ui`
+only works from there (or with `uv run --project <install folder>/app -m pq35ui`).
 
 | | Install folder |
 |---|---|

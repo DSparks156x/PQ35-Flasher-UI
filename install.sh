@@ -82,6 +82,10 @@ cat > "$APP_DIR/pq35-flasher" <<EOF
 cd "$APP_DIR" && exec "$PYTHON" -m pq35ui "\$@"
 EOF
 chmod +x "$APP_DIR/pq35-flasher"
+# A terminal command too: uv's installer puts ~/.local/bin on PATH.
+BIN_DIR="${XDG_BIN_HOME:-$HOME/.local/bin}"
+mkdir -p "$BIN_DIR"
+ln -sf "$APP_DIR/pq35-flasher" "$BIN_DIR/pq35-flasher"
 
 if [ -n "$UPDATING" ]; then
     step "Updated. Reopening PQ35 Flasher"
@@ -141,7 +145,11 @@ EOF
 fi
 
 echo
-printf '\033[32mPQ35 Flasher is installed.\033[0m You can always start it with: "%s/pq35-flasher"\n' "$APP_DIR"
+printf '\033[32mPQ35 Flasher is installed.\033[0m Start it from a terminal with: pq35-flasher\n'
+case ":$PATH:" in
+    *":$BIN_DIR:"*) ;;
+    *) echo "($BIN_DIR isn't on your PATH yet: open a new terminal, or run $APP_DIR/pq35-flasher)" ;;
+esac
 if [ "$OS" = "Darwin" ]; then
     echo "On macOS only CANable/candleLight (gs_usb) adapters work, and that's untested."
 else
