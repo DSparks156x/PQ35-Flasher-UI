@@ -88,9 +88,11 @@ a rate and press Start. Values update live, and a CSV goes to
 column per value, all numeric, values carried forward between reads. That's the layout
 Datazap reads for generic CSV logs. Nothing is written to the module while logging.
 
-The named values come from one car's reference sheets (a 2.0T engine, a DSG, Haldex
+The named values come from one car's measuring-group sheets (a 2.0T engine, a DSG, Haldex
 groups 1/3/5), so on other ECUs some names may not match what's in the group. Raw
-groups always work. Fewer groups log faster.
+groups always work. Fewer groups log faster. The sheets are titled with workshop (VCDS)
+addresses; the app talks to TP2 IDs, which the gateway's installation list maps (AWD
+22 is TP2 0x0A).
 
 ## SGO files (EPS)
 
