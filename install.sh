@@ -19,6 +19,9 @@ else
 fi
 
 step() { printf '\033[36m==> %s\033[0m\n' "$1"; }
+warn() { printf '\033[33m!!  %s\033[0m\n' "$1" >&2; }
+# Any failed step stops the script (set -e); say so instead of just stopping.
+trap 'code=$?; [ "$code" -eq 0 ] || printf "\033[31mInstall FAILED (exit %s). The lines above say why.\033[0m\n" "$code" >&2' EXIT
 
 # Yes/no question that still works when this script is piped into sh.
 ask() {
@@ -74,7 +77,10 @@ if ! command -v uv >/dev/null; then
 fi
 
 step "Installing the app (this takes a minute the first time)"
-uv sync --project "$APP_DIR" --frozen 2>/dev/null || uv sync --project "$APP_DIR"
+if ! uv sync --project "$APP_DIR" --frozen; then
+    warn "Install from the lockfile failed (above); retrying without it."
+    uv sync --project "$APP_DIR"
+fi
 
 PYTHON="$APP_DIR/.venv/bin/python"
 cat > "$APP_DIR/pq35-flasher" <<EOF
@@ -101,6 +107,9 @@ if [ "$OS" = "Darwin" ]; then
             bundle="/Applications/PQ35 Flasher.app"
         else
             bundle="$HOME/Applications/PQ35 Flasher.app"
+            warn "Can't write to /Applications (not an admin account?), so the app goes in"
+            warn "your personal Applications folder instead: $HOME/Applications"
+            warn "In Finder that's your home folder > Applications."
         fi
         rm -rf "$bundle"
         mkdir -p "$bundle/Contents/MacOS" "$bundle/Contents/Resources"
@@ -125,7 +134,10 @@ EOF
 EOF
         # Tell macOS about it now, so Launchpad and Spotlight list it straight away.
         lsregister=/System/Library/Frameworks/CoreServices.framework/Frameworks/LaunchServices.framework/Support/lsregister
-        [ -x "$lsregister" ] && "$lsregister" -f "$bundle" >/dev/null 2>&1 || true
+        if ! { [ -x "$lsregister" ] && "$lsregister" -f "$bundle"; }; then
+            warn "Couldn't register the app with macOS, so Launchpad/Spotlight may only"
+            warn "show it after a while. It's here meanwhile: $bundle"
+        fi
         touch "$bundle"
         echo "Added $bundle"
         echo "Open it from Launchpad, Spotlight (type PQ35) or Applications in Finder."
@@ -153,7 +165,10 @@ EOF
     if [ -d "$desktop" ] && ask "Add a desktop shortcut?"; then
         desktop_entry > "$desktop/pq35-flasher.desktop"
         chmod +x "$desktop/pq35-flasher.desktop"
-        command -v gio >/dev/null && gio set "$desktop/pq35-flasher.desktop" metadata::trusted true 2>/dev/null || true
+        if ! { command -v gio >/dev/null && gio set "$desktop/pq35-flasher.desktop" metadata::trusted true; }; then
+            warn "Couldn't mark the desktop shortcut as trusted. If it won't start, right-click"
+            warn "it and choose \"Allow Launching\" (the app menu entry works regardless)."
+        fi
     fi
 fi
 

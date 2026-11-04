@@ -72,22 +72,40 @@ def datalogs_dir() -> Path:
     return user_dir() / "Datalogs"
 
 
-def migrate_old_library():
-    """Move module records from the old app-data location to Documents."""
+def check_writable() -> list:
+    """Folders the app must be able to write, each with why it can't. Empty if fine."""
+    problems = []
+    for describe, folder in (("settings", data_dir), ("your files", user_dir)):
+        try:
+            path = folder()
+            probe = path / ".write-test"
+            probe.write_text("ok", encoding="utf-8")
+            probe.unlink()
+        except OSError as exc:
+            problems.append(f"{describe}: {getattr(exc, 'filename', None) or ''} "
+                            f"({exc.strerror or exc})".replace(" ()", ""))
+    return problems
+
+
+def migrate_old_library() -> list:
+    """Move module records from the old app-data location to Documents.
+    Returns the ones that couldn't be moved, with why."""
+    failed = []
     old = data_dir() / "library"
     if not old.is_dir():
-        return
+        return failed
     for child in old.iterdir():
         target = modules_dir() / child.name
         if not target.exists():
             try:
                 shutil.move(str(child), str(target))
-            except OSError:
-                pass
+            except OSError as exc:
+                failed.append(f"{child} ({exc.strerror or exc})")
     try:
         old.rmdir()
     except OSError:
-        pass
+        pass  # still holds a record that already exists in Documents, or failed above
+    return failed
 
 
 def prune_logs(keep: int = 20):
