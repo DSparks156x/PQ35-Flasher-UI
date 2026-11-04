@@ -96,6 +96,11 @@ class MainWindow(QMainWindow):
         self.nav_bottom = QListWidget()
         self.nav_bottom.setObjectName("navlist")
         nav_layout.addWidget(self.nav_bottom)
+        # Mouse navigation only. A list view that gets keyboard focus with no current
+        # item selects its first row, so focus passing through (e.g. when a busy job
+        # disables the focused button) would silently switch pages.
+        for nav_list in (self.nav, self.nav_bottom):
+            nav_list.setFocusPolicy(Qt.FocusPolicy.NoFocus)
         footer = QVBoxLayout()
         footer.setContentsMargins(12, 0, 10, 0)
         footer.setSpacing(4)
