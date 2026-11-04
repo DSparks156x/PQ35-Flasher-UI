@@ -436,5 +436,6 @@ class MainWindow(QMainWindow):
                                 "interrupt it. Wait for it to finish.")
             event.ignore()
             return
+        self.pages["logger"].close_live()
         self.pool.stop()
         event.accept()
