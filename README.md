@@ -188,7 +188,9 @@ Settings and lock files live in the per-user app-data folder (`%LOCALAPPDATA%\PQ
 
 ## Demo mode
 
-`python -m pq35ui --demo` adds a "Demo · pretend module" interface that simulates
+Turn on **Demo mode** under **Flasher stuff** (bottom of the sidebar); the app restarts
+in demo mode, and turning it off restarts it normally. `python -m pq35ui --demo` does the
+same from a terminal. Demo mode adds a "Demo · pretend module" interface that simulates
 identify, backup, flash and diagnostics with no hardware. Images still go through the
 real flasher checks. The pretend module remembers what you flash to it, and its backups
 are kept apart from the real library. To start it from a real image, set

@@ -2,6 +2,7 @@
 import ctypes
 import os
 import shutil
+import subprocess
 import sys
 
 from PySide6.QtCore import QProcess, Qt, QTimer
@@ -16,7 +17,7 @@ from . import pages, updates
 from .logger_page import LoggerPage
 from .client import WorkerPool
 from .state import AppState
-from .storage import Settings
+from .storage import REPO_ROOT, Settings
 from .widgets import Badge, muted
 
 NAV = (
@@ -29,7 +30,7 @@ NAV = (
 )
 # Kept apart at the bottom of the sidebar, away from the work tabs.
 BOTTOM_NAV = (
-    ("log", "Flasher Logs", pages.LogPage),
+    ("log", "Flasher stuff", pages.LogPage),
 )
 
 
@@ -162,6 +163,7 @@ class MainWindow(QMainWindow):
         self.state.open_patched_in_flash.connect(lambda *_: self.nav.setCurrentRow(2))
         self.state.refresh_interfaces.connect(self.refresh_interfaces)
         self.state.start_recovery.connect(lambda: self.nav.setCurrentRow(2))
+        self.state.restart_app.connect(self._restart)
 
         native = self.pool.native()
         native.call("hello", {}, self._hello, self._worker_broken)
@@ -173,6 +175,23 @@ class MainWindow(QMainWindow):
         self.rescan.setInterval(4000)
         self.rescan.timeout.connect(self._auto_refresh)
         self.rescan.start()
+
+    def _restart(self, demo):
+        """Start a fresh instance in the other mode, then close this one. The modes keep
+        separate data folders and locks, so the two can't clash while this one exits."""
+        if self.state.busy:
+            QMessageBox.warning(self, "PQ35 Flasher", "Wait for the current operation to finish.")
+            return
+        env = dict(os.environ)
+        env.pop("PQ35_DEMO", None)
+        args = [sys.executable, "-m", "pq35ui"] + (["--demo"] if demo else [])
+        flags = getattr(subprocess, "CREATE_NO_WINDOW", 0) if sys.platform == "win32" else 0
+        try:
+            subprocess.Popen(args, cwd=str(REPO_ROOT), env=env, creationflags=flags)
+        except OSError as exc:
+            QMessageBox.critical(self, "PQ35 Flasher", f"Couldn't restart: {exc}")
+            return
+        self.close()
 
     def _main_nav_changed(self, row):
         if row >= 0:

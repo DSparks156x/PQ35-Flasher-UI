@@ -13,6 +13,7 @@ class AppState(QObject):
     open_patched_in_flash = Signal(str, str)  # patched image, the image it was patched from
     refresh_interfaces = Signal()
     start_recovery = Signal()
+    restart_app = Signal(bool)  # True: restart in demo mode, False: normal mode
     sample = Signal(dict)  # one live measuring-block read from a "log" job
 
     def __init__(self, pool, settings, parent=None):

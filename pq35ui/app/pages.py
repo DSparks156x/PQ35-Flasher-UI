@@ -1,5 +1,6 @@
 """The screens behind the left-hand navigation."""
 import json
+import os
 import re
 import shutil
 import time
@@ -1670,10 +1671,20 @@ class DiagnosticsPage(Page):
 
 
 class LogPage(Page):
-    title = "Flasher Logs"
+    """Flasher stuff: demo mode and the flasher logs."""
+    title = "Flasher stuff"
 
     def __init__(self, state, parent=None):
         super().__init__(state, parent)
+        demo = self.add(Card("Demo mode"))
+        demo.add(muted("Try the app with pretend modules. Nothing talks to real hardware, and "
+                       "demo files are kept apart in Documents/PQ35 Flasher/Demo. Switching "
+                       "restarts the app."))
+        self.demo_toggle = QCheckBox("Demo mode")
+        self.demo_toggle.setChecked(bool(os.environ.get("PQ35_DEMO")))
+        self.demo_toggle.clicked.connect(self._demo_clicked)
+        demo.add(self.demo_toggle)
+        logs = self.add(Card("Flasher logs"))
         prune_logs(keep=20)
         self.log_stamp = timestamp()
         self.log_part = 1
@@ -1689,14 +1700,28 @@ class LogPage(Page):
         folder = QPushButton("Open logs folder")
         folder.clicked.connect(lambda: QDesktopServices.openUrl(QUrl.fromLocalFile(str(logs_dir()))))
         row.addWidget(folder)
-        holder = QWidget()
-        holder.setLayout(row)
-        self.add(holder)
-        self.text = self.add(QPlainTextEdit())
+        logs.add(row)
+        self.text = logs.add(QPlainTextEdit())
         self.text.setReadOnly(True)
         self.text.setMinimumHeight(420)
         self.text.setMaximumBlockCount(20000)
         state.pool.event.connect(self.on_event)
+
+    def refresh(self):
+        self.demo_toggle.setEnabled(not self.state.busy)
+
+    def _demo_clicked(self, on):
+        current = bool(os.environ.get("PQ35_DEMO"))
+        self.demo_toggle.setChecked(current)  # only changes once the restart is confirmed
+        if on == current:
+            return
+        answer = QMessageBox.question(
+            self, "Demo mode",
+            ("Restart in demo mode? Only pretend modules are offered; nothing talks to real "
+             "hardware." if on else
+             "Leave demo mode? The app restarts and offers your real interfaces again."))
+        if answer == QMessageBox.StandardButton.Yes:
+            self.state.restart_app.emit(on)
 
     def write(self, line, show=True):
         stamped = time.strftime("%H:%M:%S ") + line
