@@ -5,14 +5,16 @@ import time
 
 from PySide6.QtCore import Qt, QTimer, QUrl
 from PySide6.QtGui import QDesktopServices
+from PySide6.QtGui import QFont
 from PySide6.QtWidgets import (
-    QComboBox, QHBoxLayout, QHeaderView, QLineEdit, QPushButton, QSpinBox, QTableWidget,
-    QTableWidgetItem, QTreeWidget, QTreeWidgetItem,
+    QComboBox, QFrame, QGridLayout, QHBoxLayout, QHeaderView, QLabel, QLineEdit, QPushButton,
+    QScrollArea, QSizePolicy, QSpinBox, QSplitter, QTreeWidget, QTreeWidgetItem, QVBoxLayout,
+    QWidget,
 )
 
 from .pages import Page
 from .storage import datalogs_dir, timestamp
-from .widgets import Banner, Card, muted
+from .widgets import Banner, Card, muted, restyle
 
 # Per-group read interval: 0 is as fast as the module answers.
 RATES = (("As fast as possible", 0), ("10 Hz", 100), ("5 Hz", 200), ("2 Hz", 500), ("1 Hz", 1000))
@@ -74,6 +76,89 @@ class DatazapWriter:
             self.file.close()
 
 
+class Tile(QFrame):
+    """One live reading, sized to be read at a glance from the driver's seat."""
+
+    def __init__(self, name, unit, where):
+        super().__init__()
+        self.setObjectName("tile")
+        self.setMinimumWidth(TILE_WIDTH)
+        self.setFixedHeight(150)  # room for a two-line name; same height so rows line up
+        self.setSizePolicy(QSizePolicy.Policy.Expanding, QSizePolicy.Policy.Fixed)
+        layout = QVBoxLayout(self)
+        layout.setContentsMargins(14, 10, 14, 10)
+        layout.setSpacing(2)
+        self.name = QLabel(name)
+        self.name.setObjectName("tileName")
+        self.name.setWordWrap(True)
+        self.value = QLabel("–")
+        self.value.setObjectName("tileValue")
+        bottom = QHBoxLayout()
+        self.unit = QLabel(unit)
+        self.unit.setObjectName("tileUnit")
+        self.where = QLabel(where)
+        self.where.setObjectName("tileWhere")
+        bottom.addWidget(self.unit)
+        bottom.addStretch(1)
+        bottom.addWidget(self.where)
+        layout.addWidget(self.name)
+        layout.addWidget(self.value)
+        layout.addLayout(bottom)
+
+
+class TileGrid(QWidget):
+    """Tiles in as many columns as fit, reflowed when the width changes."""
+
+    def __init__(self):
+        super().__init__()
+        self.grid = QGridLayout(self)
+        self.grid.setContentsMargins(0, 0, 0, 0)
+        self.grid.setSpacing(10)
+        self.tiles = {}   # key -> Tile, in display order
+        self.columns = 0
+        self.empty = muted("Tick values on the left (or add a group) and they appear here.")
+        self.grid.addWidget(self.empty, 0, 0)
+
+    def clear(self):
+        for tile in self.tiles.values():
+            tile.deleteLater()
+        self.tiles = {}
+        self._reflow(force=True)
+
+    def add(self, key, name, unit, where):
+        tile = Tile(name, unit, where)
+        self.tiles[key] = tile
+        self._reflow(force=True)
+        return tile
+
+    def remove(self, key):
+        tile = self.tiles.pop(key, None)
+        if tile is not None:
+            tile.deleteLater()
+            self._reflow(force=True)
+
+    def _reflow(self, force=False):
+        columns = max(1, (self.width() + 10) // (TILE_WIDTH + 10))
+        if columns == self.columns and not force:
+            return
+        self.columns = columns
+        while self.grid.count():
+            self.grid.takeAt(0)
+        self.empty.setVisible(not self.tiles)
+        if not self.tiles:
+            self.grid.addWidget(self.empty, 0, 0)
+        for index, tile in enumerate(self.tiles.values()):
+            self.grid.addWidget(tile, index // columns, index % columns)
+        self.grid.setRowStretch(self.grid.rowCount(), 1)
+
+    def resizeEvent(self, event):
+        super().resizeEvent(event)
+        self._reflow()
+
+
+TILE_WIDTH = 200
+
+
 class LoggerPage(Page):
     title = "Data logger"
 
@@ -84,67 +169,87 @@ class LoggerPage(Page):
         self.raw_groups = set()
         self.running = False
         self.writer = None
-        self.rows = {}        # column key -> table row
+        self.rows = {}        # column key -> Tile
         self.latest = {}      # column key -> (text, unit)
         self.started = 0.0
         self.samples = 0
         self.errors = 0
-        self.add(muted("Reads measuring blocks while you drive. Nothing is written to the module. "
-                       "One module at a time."))
+        # The page itself never scrolls; the value list and the tiles scroll on their own.
+        self.setVerticalScrollBarPolicy(Qt.ScrollBarPolicy.ScrollBarAlwaysOff)
+        self.setHorizontalScrollBarPolicy(Qt.ScrollBarPolicy.ScrollBarAlwaysOff)
+        self.layout_.setContentsMargins(20, 16, 20, 16)
 
-        pick = self.add(Card("What to log"))
-        self.search = QLineEdit()
-        self.search.setPlaceholderText("Search values (boost, timing, gear…)")
-        self.search.textChanged.connect(self._filter)
-        pick.add(self.search)
-        self.tree = QTreeWidget()
-        self.tree.setHeaderLabels(["Value", "Unit", "Group"])
-        self.tree.setMinimumHeight(240)
-        self.tree.header().setSectionResizeMode(0, QHeaderView.ResizeMode.Stretch)
-        self.tree.itemChanged.connect(lambda *_: self._selection_changed())
-        pick.add(self.tree)
+        bar = self.add(Card())
         row = QHBoxLayout()
-        row.addWidget(muted("Not listed? Log a whole group:"))
-        self.raw_spin = QSpinBox()
-        self.raw_spin.setRange(1, 255)
-        row.addWidget(self.raw_spin)
-        add_raw = QPushButton("Add group")
-        add_raw.clicked.connect(self._add_raw)
-        row.addWidget(add_raw)
-        self.clear_raw = QPushButton("Remove raw groups")
-        self.clear_raw.clicked.connect(self._remove_raw)
-        row.addWidget(self.clear_raw)
-        row.addStretch(1)
-        pick.add(row)
-        self.summary = pick.add(muted(""))
-
-        run = self.add(Card("Log"))
-        row = QHBoxLayout()
-        row.addWidget(muted("Rate per group"))
+        row.setSpacing(12)
+        self.start_button = QPushButton("Start logging")
+        self.start_button.setObjectName("primary")
+        self.start_button.setMinimumSize(190, 48)
+        big = QFont(self.start_button.font())
+        big.setPointSizeF(big.pointSizeF() + 2)
+        self.start_button.setFont(big)
+        self.start_button.clicked.connect(self.toggle)
+        row.addWidget(self.start_button)
+        rate_label = muted("Rate per group")
+        rate_label.setWordWrap(False)
+        row.addWidget(rate_label)
         self.rate = QComboBox()
         for label, interval in RATES:
             self.rate.addItem(label, interval)
         row.addWidget(self.rate)
-        self.start_button = QPushButton("Start logging")
-        self.start_button.setObjectName("primary")
-        self.start_button.clicked.connect(self.toggle)
-        row.addWidget(self.start_button)
-        self.open_folder = QPushButton("Open datalogs folder")
+        row.addStretch(1)
+        self.open_folder = QPushButton("Datalogs folder")
         self.open_folder.clicked.connect(
             lambda: QDesktopServices.openUrl(QUrl.fromLocalFile(str(datalogs_dir()))))
         row.addWidget(self.open_folder)
+        bar.add(row)
+        # Its own line, so a long status never squeezes the buttons.
+        self.status = bar.add(muted("Reads measuring blocks; nothing is written to the module."))
+        self.banner = bar.add(Banner())
+
+        self.split = QSplitter(Qt.Orientation.Horizontal)
+        self.split.setChildrenCollapsible(False)
+        self.picker = Card("What to log")
+        self.picker.setMinimumWidth(280)
+        self.search = QLineEdit()
+        self.search.setPlaceholderText("Search values (boost, timing, gear…)")
+        self.search.textChanged.connect(self._filter)
+        self.picker.add(self.search)
+        self.tree = QTreeWidget()
+        self.tree.setHeaderLabels(["Value", "Unit", "Group"])
+        self.tree.setMinimumHeight(120)
+        self.tree.header().setSectionResizeMode(0, QHeaderView.ResizeMode.Stretch)
+        self.tree.itemChanged.connect(lambda *_: self._selection_changed())
+        self.picker.body.addWidget(self.tree, 1)
+        row = QHBoxLayout()
+        row.addWidget(muted("Whole group"))
+        self.raw_spin = QSpinBox()
+        self.raw_spin.setRange(1, 255)
+        row.addWidget(self.raw_spin)
+        add_raw = QPushButton("Add")
+        add_raw.clicked.connect(self._add_raw)
+        row.addWidget(add_raw)
+        self.clear_raw = QPushButton("Remove groups")
+        self.clear_raw.clicked.connect(self._remove_raw)
+        row.addWidget(self.clear_raw)
         row.addStretch(1)
-        run.add(row)
-        self.status = run.add(muted(""))
-        self.banner = run.add(Banner())
-        self.table = QTableWidget(0, 4)
-        self.table.setHorizontalHeaderLabels(["Value", "Reading", "Unit", "Group"])
-        self.table.horizontalHeader().setSectionResizeMode(0, QHeaderView.ResizeMode.Stretch)
-        self.table.verticalHeader().setVisible(False)
-        self.table.setEditTriggers(QTableWidget.EditTrigger.NoEditTriggers)
-        self.table.setMinimumHeight(240)
-        run.add(self.table)
-        self.finish()
+        self.picker.add(row)
+        self.summary = self.picker.add(muted(""))
+        self.split.addWidget(self.picker)
+
+        live = Card("Live")
+        live.setMinimumWidth(TILE_WIDTH + 40)
+        scroll = QScrollArea()
+        scroll.setWidgetResizable(True)
+        scroll.setFrameShape(QFrame.Shape.NoFrame)
+        scroll.setHorizontalScrollBarPolicy(Qt.ScrollBarPolicy.ScrollBarAlwaysOff)
+        self.tiles = TileGrid()
+        scroll.setWidget(self.tiles)
+        live.body.addWidget(scroll, 1)
+        self.split.addWidget(live)
+        self.split.setStretchFactor(0, 2)
+        self.split.setStretchFactor(1, 3)
+        self.layout_.addWidget(self.split, 1)
 
         self.ticker = QTimer(self)
         self.ticker.setInterval(150)  # repaint the table ~7x a second, not per sample
@@ -268,7 +373,7 @@ class LoggerPage(Page):
         """Show what will be logged (value, unit, group) before Start; readings stay "–"."""
         self.rows = {}
         self.latest = {}
-        self.table.setRowCount(0)
+        self.tiles.clear()
         for value in values:
             self._add_row(f"{value['group']}.{value['field']}", value["name"], value["unit"])
         for group in sorted(self.raw_groups):
@@ -301,7 +406,8 @@ class LoggerPage(Page):
             "log", {"groups": groups, "interval_ms": self.rate.currentData()},
             self._finished, self._failed)
         if self.running:
-            self.start_button.setText("Stop logging")
+            self._set_button("Stop logging", "stop")
+            self.picker.hide()  # all the width for the readings while driving
             self.ticker.start()
         self.refresh()
 
@@ -310,19 +416,17 @@ class LoggerPage(Page):
         self.start_button.setText("Stopping…")
         self.state.stop()
 
+    def _set_button(self, text, style):
+        self.start_button.setText(text)
+        self.start_button.setObjectName(style)
+        restyle(self.start_button)
+
     def _add_row(self, key, name, unit="", where=None):
-        row = self.table.rowCount()
-        self.table.insertRow(row)
-        for column, text in enumerate((name, "–", unit, where or key)):
-            self.table.setItem(row, column, QTableWidgetItem(text))
-        self.rows[key] = row
+        self.rows[key] = self.tiles.add(key, name, unit, f"group {where or key}")
 
     def _remove_row(self, key):
-        row = self.rows.pop(key, None)
-        if row is None:
-            return
-        self.table.removeRow(row)
-        self.rows = {k: (r - 1 if r > row else r) for k, r in self.rows.items()}
+        if self.rows.pop(key, None) is not None:
+            self.tiles.remove(key)
 
     def on_sample(self, sample):
         if not self.running:
@@ -349,17 +453,18 @@ class LoggerPage(Page):
 
     def _paint(self):
         for key, (text, unit) in self.latest.items():
-            row = self.rows.get(key)
-            if row is None:
+            tile = self.rows.get(key)
+            if tile is None:
                 continue
             reading = text[:-len(unit)].strip() if unit and text.endswith(unit) else text
-            self.table.item(row, 1).setText(reading)
-            self.table.item(row, 2).setText(unit)
+            tile.value.setText(reading)
+            if unit:
+                tile.unit.setText(unit)
         elapsed = time.time() - self.started
         rate = self.samples / elapsed if elapsed > 0 else 0
-        self.status.setText(f"{int(elapsed // 60)}:{int(elapsed % 60):02d} · {self.samples} reads "
-                            f"({rate:.1f}/s) · {self.writer.rows if self.writer else 0} CSV rows"
-                            + (f" · {self.errors} errors" if self.errors else ""))
+        self.status.setText(f"{int(elapsed // 60)}:{int(elapsed % 60):02d}  ·  {self.samples} reads "
+                            f"({rate:.1f}/s)  ·  {self.writer.rows if self.writer else 0} CSV rows"
+                            + (f"  ·  {self.errors} errors" if self.errors else ""))
 
     def _end(self):
         self.running = False
@@ -367,7 +472,8 @@ class LoggerPage(Page):
         self._paint()
         if self.writer:
             self.writer.close()
-        self.start_button.setText("Start logging")
+        self._set_button("Start logging", "primary")
+        self.picker.show()
         self.refresh()
 
     def _finished(self, result):

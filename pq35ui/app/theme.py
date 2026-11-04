@@ -72,6 +72,13 @@ QToolButton::menu-indicator {{ image: none; width: 0; }}
 QPushButton:disabled {{ color: {muted}; }}
 QPushButton#primary {{ background: {accent}; color: white; border: none; font-weight: 600; }}
 QPushButton#primary:disabled {{ background: {surface2}; color: {muted}; }}
+QPushButton#stop {{ background: {err}; color: {bg}; border: none; font-weight: 600; }}
+QPushButton#stop:disabled {{ background: {surface2}; color: {muted}; }}
+#tile {{ background: {surface2}; border: 1px solid {border}; border-radius: 10px; }}
+#tileName {{ color: {muted}; font-size: 10pt; }}
+#tileValue {{ font-size: 26pt; font-weight: 600; }}
+#tileUnit {{ color: {muted}; font-size: 11pt; }}
+#tileWhere {{ color: {muted}; font-size: 9pt; }}
 QPushButton#danger {{ color: {err}; border-color: {err}; }}
 QListWidget#navlist {{ background: transparent; border: none; outline: none; }}
 QListWidget#navlist::item {{ padding: 8px 10px; border-radius: 6px; margin: 1px 6px; }}
