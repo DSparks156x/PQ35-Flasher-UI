@@ -8,6 +8,7 @@ real thing. Seed it with a real image via PQ35_DEMO_HALDEX / PQ35_DEMO_EPS.
 """
 import hashlib
 import json
+import math
 import os
 import random
 import time
@@ -20,6 +21,13 @@ DEFAULT_IDENTITY = {
     HALDEX: ("0BR907554A", "6816", "Haldex 4Motion"),
     EPS: ("1K0909144R", "3501", "EPS_ZFLS Kl.3"),
     BCM: ("8P0907063E", "0575", "Bordnetz-SG"),
+    "engine": ("1K0907115J", "0030", "2.0l R4/4V TFSI"),
+    "transmission": ("02E927770AL", "0260", "GSG DSG AG6"),
+}
+DEMO_DTCS = {
+    "engine": [{"code": 16684, "code_text": "16684", "status": 0x23,
+                "status_text": "P0300 Random/Multiple Cylinder Misfire Detected (intermittent)"}],
+    "transmission": [],
 }
 SEED_ENV = {HALDEX: "PQ35_DEMO_HALDEX", EPS: "PQ35_DEMO_EPS"}
 
@@ -72,7 +80,7 @@ class DemoModule:
         return b"\xff" * 0x1000
 
     def identity(self, family) -> dict:
-        part, version, desc = DEFAULT_IDENTITY[family]
+        part, version, desc = DEFAULT_IDENTITY.get(family, ("000000000", "0001", family))
         if family in SEED_ENV:
             from .images import _part_numbers
             found = _part_numbers(self.image(family))
@@ -155,6 +163,81 @@ class DemoModule:
         self.server.progress("SCAN", 100, "Done")
         return results
 
+    # --- live logging and fault codes ---
+
+    def _catalog(self, module):
+        try:
+            from flasher.measuring_catalog import values_for_module
+            return values_for_module(module)
+        except ImportError:
+            return []
+
+    @staticmethod
+    def _fake_value(unit, t, field):
+        unit = (unit or "").lower()
+        wave = (math.sin(t / 2.0 + field) + 1) / 2
+        if "rpm" in unit or "/min" in unit:
+            return round(850 + 5200 * wave), 0
+        if "mbar" in unit or "hpa" in unit:
+            return round(990 + 1300 * wave), 0
+        if "°c" in unit or "c" == unit:
+            return round(88 + 6 * wave, 1), 1
+        if "km/h" in unit:
+            return round(160 * wave), 0
+        if unit == "v":
+            return round(13.8 + 0.4 * wave, 2), 2
+        if "°" in unit or "kw" in unit:
+            return round(-6 + 12 * wave, 1), 1
+        if "%" in unit:
+            return round(100 * wave, 1), 1
+        return round(100 * wave, 1), 1
+
+    def _log(self, family, params):
+        """Fake samples, round-robin over the groups, until the UI sends stop."""
+        module = get_family(family).module
+        groups = sorted({int(g) for g in params.get("groups") or ()})
+        if not groups:
+            raise ValueError("Choose at least one value to log.")
+        units = {(v["group"], v["field"]): v["unit"] for v in self._catalog(module)}
+        interval = max(int(params.get("interval_ms") or 0), 40) / 1000.0
+        started = time.monotonic()
+        count = 0
+        while not self.server.stop_event.is_set():
+            for group in groups:
+                if self.server.stop_event.is_set():
+                    break
+                t = time.monotonic() - started
+                fields = []
+                for index in range(1, 5):
+                    unit = units.get((group, index), "")
+                    value, decimals = self._fake_value(unit, t, index + group)
+                    fields.append({"index": index, "formula": 0, "a": 0, "b": 0, "value": value,
+                                   "unit": unit, "numeric": True,
+                                   "text": f"{value:.{decimals}f} {unit}".strip()})
+                self.server.emit({"event": "sample", "module": module, "group": group,
+                                  "time": time.monotonic(), "wall_time": time.time(),
+                                  "fields": fields, "raw": "", "error": None,
+                                  "round_trip_ms": 25.0})
+                count += 1
+                time.sleep(interval)
+        elapsed = max(time.monotonic() - started, 1e-3)
+        return {"samples": count, "errors": 0, "reconnects": 0,
+                "achieved_hz": {str(g): round(count / len(groups) / elapsed, 1) for g in groups}}
+
+    def _dtc(self, family, clear):
+        path = self.root / f"{family}.dtc.json"
+        try:
+            codes = json.loads(path.read_text())
+        except (OSError, ValueError):
+            codes = DEMO_DTCS.get(family, [])
+        result = {}
+        if clear:
+            codes = []
+            path.write_text("[]")
+            result["clear"] = {"cleared": True, "raw": "54ff00"}
+        result.update(method="18 02 FF 00 (demo)", codes=codes, raw="")
+        return result
+
     def run(self, params) -> dict:
         if params["operation"] == "scan":
             self.log("DEMO scan: no CAN traffic")
@@ -168,6 +251,10 @@ class DemoModule:
         self._sleep(0.6)
         if operation == "identify":
             result["result"] = self.identity(family)
+        elif operation == "log":
+            result["result"] = self._log(family, params)
+        elif operation in ("dtc", "dtc_clear"):
+            result["result"] = self._dtc(family, clear=operation == "dtc_clear")
         elif operation == "readout":
             result.update(self._readout(family, params))
         elif operation == "flash":

@@ -74,6 +74,24 @@ On Linux, a SocketCAN interface that is down, or not at 500 kbit/s, gets a **Bri
 button on the Connect page. It runs `ip link set … up type can bitrate 500000` through
 `pkexec`, so you're asked for your password.
 
+## Data logger and fault codes
+
+**Find modules** also finds the engine (0x01) and transmission/TCU (0x02). They're read-only
+here: no flashing or backups. Their Diagnostics page reads fault codes, and clears them after
+asking (clearing is the one write). Codes show as the 5-digit VAG code, with the P-code
+where there is one, and the raw status byte.
+
+**Data logger** (engine, transmission or Haldex, one module at a time): tick named values
+(searchable, by category), or add a whole measuring group when a value isn't listed. Pick
+a rate and press Start. Values update live, and a CSV goes to
+`Documents/PQ35 Flasher/Datalogs`: a `Time` column in seconds, then one "Name (unit)"
+column per value, all numeric, values carried forward between reads. That's the layout
+Datazap reads for generic CSV logs. Nothing is written to the module while logging.
+
+The named values come from one car's reference sheets (a 2.0T engine, a DSG, Haldex
+groups 1/3/5), so on other ECUs some names may not match what's in the group. Raw
+groups always work. Fewer groups log faster.
+
 ## SGO files (EPS)
 
 Pick or drop an EPS `.sgo` and it's converted to a `.bin` in
@@ -152,6 +170,7 @@ Your files go in **Documents/PQ35 Flasher** on every OS:
 | `Images` | Default place the file picker opens; keep your firmware here |
 | `Patched` | Where patched images are saved by default |
 | `Logs` | One log per session; the newest 20 are kept, each capped at 5 MB |
+| `Datalogs` | Data logger CSVs (Datazap-friendly) |
 
 A module's folder is named after its family and part number, not its software
 version, so backups stay with it across flashes. Demo mode uses `PQ35 Flasher/Demo`.

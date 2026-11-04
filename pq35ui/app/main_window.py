@@ -13,6 +13,7 @@ from PySide6.QtWidgets import (
 )
 
 from . import pages, updates
+from .logger_page import LoggerPage
 from .client import WorkerPool
 from .state import AppState
 from .storage import Settings
@@ -24,6 +25,7 @@ NAV = (
     ("flash", "Flash", pages.FlashPage),
     ("patches", "Patches", pages.PatchesPage),
     ("diagnostics", "Diagnostics", pages.DiagnosticsPage),
+    ("logger", "Data logger", LoggerPage),
     ("log", "Log", pages.LogPage),
 )
 
@@ -273,7 +275,8 @@ class MainWindow(QMainWindow):
             # The BCM's only diagnostic is the page FF dump, which isn't in DIAGNOSTICS.
             "diagnostics": bool(state.identity) and has_family
             and (bool(set(state.family["operations"]) & {op for op, *_ in pages.DIAGNOSTICS})
-                 or "pageff" in state.family["operations"]),
+                 or "pageff" in state.family["operations"] or state.family.get("has_dtc", False)),
+            "logger": has_family and state.family.get("can_log", False),
         }
         backup_item = self.nav.item(1)
         no_backup = has_family and state.family["name"] not in pages.BACKUP_FAMILIES
@@ -363,8 +366,17 @@ class MainWindow(QMainWindow):
         else:
             self.sleep.release()
             self._state_changed()
+            if getattr(self, "close_when_idle", False):
+                QTimer.singleShot(0, self.close)
 
     def closeEvent(self, event):
+        logger = self.pages["logger"]
+        if logger.running:
+            # A live log is safe to end: stop it, then close once the worker is idle.
+            self.close_when_idle = True
+            logger.stop()
+            event.ignore()
+            return
         if self.state.busy:
             QMessageBox.warning(self, "PQ35 Flasher",
                                 "Something is talking to the module right now. Closing would "

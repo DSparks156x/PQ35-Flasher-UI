@@ -47,7 +47,7 @@ def user_dir() -> Path:
         base = Path(documents or Path.home() / "Documents") / "PQ35 Flasher"
     if os.environ.get("PQ35_DEMO"):
         base = base / "Demo"
-    for name in ("Modules", "Images", "Patched", "Logs"):
+    for name in ("Modules", "Images", "Patched", "Logs", "Datalogs"):
         (base / name).mkdir(parents=True, exist_ok=True)
     return base
 
@@ -66,6 +66,10 @@ def patched_dir() -> Path:
 
 def logs_dir() -> Path:
     return user_dir() / "Logs"
+
+
+def datalogs_dir() -> Path:
+    return user_dir() / "Datalogs"
 
 
 def migrate_old_library():

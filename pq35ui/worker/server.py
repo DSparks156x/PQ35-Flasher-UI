@@ -52,7 +52,11 @@ SAMPLE_FLAGS = {
     "supply": ("--supply-samples", "--supply-interval-ms"),
     "can_config": ("--can-config-samples", "--can-config-interval-ms"),
 }
+# Jobs that talk to the module directly instead of through flasher.runner.
+LIVE_OPERATIONS = ("log", "dtc", "dtc_clear")
 FAMILY_LABELS = {
+    "engine": "Engine (ECU)",
+    "transmission": "Transmission (TCU)",
     "haldex-gen4": "Haldex Gen4 (AWD)",
     "pq-eps": "EPS steering rack",
     "pq-bcm": "BCM",
@@ -206,6 +210,8 @@ class Server:
         self.chunk_progress = False
         self.stdout = Capture(self, "stdout")
         self.stderr = Capture(self, "stderr")
+        # Set by the "stop" request; a live log job polls it between reads.
+        self.stop_event = threading.Event()
 
     # --- plumbing ---
 
@@ -288,6 +294,16 @@ class Server:
             return self.haldex_checksums(params["path"])
         if method == "busy":
             return self.job is not None
+        if method == "stop":
+            # Answered while a job runs: ends a live log at its next read.
+            self.stop_event.set()
+            return self.job is not None
+        if method == "catalog":
+            try:
+                from flasher.measuring_catalog import values_for_module
+            except ImportError:  # older flasher submodule
+                return []
+            return values_for_module(int(params["module"]))
         raise WorkerError(f"Unknown method {method!r}")
 
     def hello(self):
@@ -328,6 +344,8 @@ class Server:
             "can_backup": family.name == "pq-bcm" and family.supports("backup")
                           and flasher_has_flag(BACKUP_FLAG),
             "can_check_preconditions": family.name == "pq-bcm" and flasher_has_flag(PRECONDITIONS_FLAG),
+            "can_log": family.supports("log"),
+            "has_dtc": family.supports("dtc"),
         } for family in FAMILIES]
 
     def haldex_checksums(self, path):
@@ -344,6 +362,7 @@ class Server:
             self.emit({"id": request.get("id"), "error": {
                 "type": "Busy", "message": "A hardware operation is already running."}})
             return
+        self.stop_event.clear()
         self.job = threading.Thread(target=self.run_job, args=(request,), daemon=True)
         self.job.start()
 
@@ -359,7 +378,7 @@ class Server:
     def run_hardware(self, params):
         import flasher.runner as runner
         operation = params["operation"]
-        if operation not in HARDWARE_OPERATIONS and operation != "scan":
+        if operation not in HARDWARE_OPERATIONS and operation not in ("scan",) + LIVE_OPERATIONS:
             raise WorkerError(f"Unknown operation {operation!r}")
         adapter = params["adapter"]
         if adapter["adapter"] == "demo":
@@ -374,6 +393,15 @@ class Server:
         if operation == "preconditions" and not flasher_has_flag(PRECONDITIONS_FLAG):
             raise WorkerError("This flasher build has no BCM precondition check yet. "
                               "Update the flasher submodule, then restart the app.")
+        if operation in LIVE_OPERATIONS:
+            from . import live
+            self.lock.acquire()
+            try:
+                if operation == "log":
+                    return live.run_log(self, params, runner.open_adapter, self.stop_event.is_set)
+                return live.run_dtc(self, params, runner.open_adapter, clear=operation == "dtc_clear")
+            finally:
+                self.lock.release()
         if operation == "scan":
             from .scan import scan
             self.lock.acquire()

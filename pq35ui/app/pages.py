@@ -1443,8 +1443,9 @@ class DiagnosticsPage(Page):
 
     def __init__(self, state, parent=None):
         super().__init__(state, parent)
-        self.add(muted("Read-only. None of these clear faults or write anything. "
-                       "Run them with the car stationary."))
+        self.intro = self.add(muted(""))
+        from .fault_codes import FaultCodesCard
+        self.fault_card = self.add(FaultCodesCard(state, self))
         card = self.add(Card("Read"))
         self.read_card = card
         grid = QGridLayout()
@@ -1510,12 +1511,21 @@ class DiagnosticsPage(Page):
             button.setVisible(op in ops)
             button.setEnabled(bool(self.state.identity) and not self.state.busy)
         bcm = bool(self.state.family) and self.state.family["name"] == BCM
-        self.read_card.setVisible(not bcm)
-        self.result_card.setVisible(not bcm)
+        has_dtc = bool(self.state.family) and self.state.family.get("has_dtc", False)
+        reads = bool(ops & set(self.buttons))
+        self.fault_card.setVisible(has_dtc)
+        self.fault_card.refresh()
+        self.intro.setText(
+            "Reading fault codes is read-only; clearing them is the one thing here that changes "
+            "the module." if has_dtc else
+            "Read-only. None of these clear faults or write anything. Run them with the car "
+            "stationary.")
+        self.read_card.setVisible(not bcm and (reads or not has_dtc))
+        self.result_card.setVisible(not bcm and (reads or not has_dtc))
         self.pageff_card.setVisible(bcm)
         if bcm:
             self._refresh_pageff()
-        if not ops & set(self.buttons):
+        if not reads:
             self.banner.show_message("No diagnostics for this module yet.", "info")
         elif not self.state.identity:
             self.banner.show_message("Identify the module on the Connect page first.", "info")

@@ -13,6 +13,7 @@ class AppState(QObject):
     open_patched_in_flash = Signal(str, str)  # patched image, the image it was patched from
     refresh_interfaces = Signal()
     start_recovery = Signal()
+    sample = Signal(dict)  # one live measuring-block read from a "log" job
 
     def __init__(self, pool, settings, parent=None):
         super().__init__(parent)
@@ -30,6 +31,8 @@ class AppState(QObject):
     def _event(self, message):
         if message.get("event") == "progress":
             self.progress.emit(message)
+        elif message.get("event") == "sample":
+            self.sample.emit(message)
 
     @staticmethod
     def same_adapter(a, b) -> bool:
@@ -79,6 +82,14 @@ class AppState(QObject):
         if not self.identity:
             return ""
         return (self.identity.get("software_part_number") or self.identity.get("part_number") or "").strip()
+
+    def stop(self):
+        """Ask the running job to stop (a live log ends at its next read)."""
+        if self.busy and self.adapter:
+            try:
+                self.pool.for_adapter(self.adapter).call("stop")
+            except RuntimeError:
+                pass
 
     def run(self, operation, params=None, on_done=None, on_error=None):
         """Start a hardware job. Returns False (and reports) if one can't start."""
