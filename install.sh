@@ -95,7 +95,14 @@ fi
 
 if [ "$OS" = "Darwin" ]; then
     if ask "Add PQ35 Flasher to your Applications folder?"; then
-        bundle="$HOME/Applications/PQ35 Flasher.app"
+        # The main Applications folder (what Finder and Launchpad show) when this user
+        # can write to it, which admin users can without a password; else the personal one.
+        if [ -w /Applications ]; then
+            bundle="/Applications/PQ35 Flasher.app"
+        else
+            bundle="$HOME/Applications/PQ35 Flasher.app"
+        fi
+        rm -rf "$bundle"
         mkdir -p "$bundle/Contents/MacOS" "$bundle/Contents/Resources"
         cp "$APP_DIR/pq35ui/assets/icon.icns" "$bundle/Contents/Resources/icon.icns"
         cat > "$bundle/Contents/MacOS/PQ35 Flasher" <<EOF
@@ -112,10 +119,16 @@ EOF
   <key>CFBundleIdentifier</key><string>com.dsparks156x.pq35flasher</string>
   <key>CFBundlePackageType</key><string>APPL</string>
   <key>CFBundleIconFile</key><string>icon</string>
+  <key>CFBundleShortVersionString</key><string>0.1.0</string>
   <key>NSHighResolutionCapable</key><true/>
 </dict></plist>
 EOF
+        # Tell macOS about it now, so Launchpad and Spotlight list it straight away.
+        lsregister=/System/Library/Frameworks/CoreServices.framework/Frameworks/LaunchServices.framework/Support/lsregister
+        [ -x "$lsregister" ] && "$lsregister" -f "$bundle" >/dev/null 2>&1 || true
+        touch "$bundle"
         echo "Added $bundle"
+        echo "Open it from Launchpad, Spotlight (type PQ35) or Applications in Finder."
     fi
 else
     desktop_entry() {

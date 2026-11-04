@@ -31,7 +31,8 @@ curl -LsSf https://raw.githubusercontent.com/DSparks156x/PQ35-Flasher-UI/main/in
 The installer sets up [uv](https://docs.astral.sh/uv/) and a private Python for the
 app. On Windows it also adds a private 32-bit Python for J2534 adapters. It doesn't touch
 any Python you already have. It then asks whether to add shortcuts: Start menu and
-desktop on Windows, app menu and desktop on Linux, Applications folder on macOS.
+desktop on Windows, app menu and desktop on Linux, and on macOS an app in `/Applications`
+(or `~/Applications` if `/Applications` isn't writable) that shows in Launchpad and Spotlight.
 Set `PQ35_YES=1` to answer yes to everything. Run the installer again to update.
 
 From a terminal on Linux/macOS, run `pq35-flasher` (add `--demo` for demo mode). The
