@@ -97,25 +97,6 @@ a rate and press Start. Values update live, and a CSV goes to
 column per value, all numeric, values carried forward between reads. That's the layout
 Datazap reads for generic CSV logs. Nothing is written to the module while logging.
 
-The named values come from one car's measuring-group sheets (a 2.0T engine, a DSG, Haldex
-groups 1/3/5), so on other ECUs some names may not match what's in the group. Raw
-groups always work. Fewer groups log faster. The sheets are titled with workshop (VCDS)
-addresses; the app talks to TP2 IDs, which the gateway's installation list maps (AWD
-22 is TP2 0x0A).
-
-## SGO files (EPS)
-
-Pick or drop an EPS `.sgo` and it's converted to a `.bin` in
-`Documents/PQ35 Flasher/Images` first: a full firmware SGO becomes a 384 KiB image, a
-steer-dataset SGO becomes a 4 KiB 0x5E dataset. Some dataset SGOs (v074N…) also carry a
-0x5D block and two small low-address records; only the 0x5E block is used. Gen2
-datasets (firmware below 3000) and partial-code SGOs are refused. Everything after that (checks, patches,
-flashing) uses the `.bin`, which goes through exactly the same rules as any other
-image. Only PQ35 racks (1K0/8J0 909 144) are accepted; SGOs for other controllers,
-such as 5N1 909 144 PQ46 racks, are refused. The converter follows
-`unpack_firmware_sgos.py` in [DSparks156x/pq-flasher](https://github.com/DSparks156x/pq-flasher)
-(a fork of Willem Melching's pq-flasher, MIT) and reproduces its output byte for byte. Haldex: `.bin` only.
-
 ## How it works
 
 ```
@@ -141,8 +122,7 @@ PySide6 UI (64-bit)  ──JSON lines──▶  worker  ──▶  flasher (subm
   library. The full application is the default. Smaller ranges appear under advanced
   options, and only when they cover every byte that differs from the module's last known
   image.
-- **EPS: no backup step**, because racks can't be read back over OBD. What can be written
-  depends on the firmware the module reports:
+- **EPS**
   - 0x5E steer dataset: firmware 3000 or newer, and never the factory `000` placeholder.
     It's the default.
   - 0x5D configuration block: only onto the exact firmware version it was built for. It
